@@ -274,8 +274,7 @@ jobs:
               raw.extend(b'\x1e\x29\x3b' * w)
           def chunk(t, d):
               return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-          png = b'\x89PNG\r
-\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b'')
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b'')
           with open('iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png', 'wb') as f:
               f.write(png)
           EOF
@@ -691,4 +690,4 @@ jobs:
         with:
           name: ${{ env.APP_NAME }}-iOS-IPA
           path: build/ios/ipa/*.ipa
-# Sync: 2026-10-28T19:43:38.782Z
+# Sync: 2026-10-28T20:03:54.294Z
