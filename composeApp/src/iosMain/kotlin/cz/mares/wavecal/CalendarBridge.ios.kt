@@ -1,19 +1,11 @@
 package cz.mares.wavecal
 
-import kotlinx.cinterop.ExperimentalForeignApi
-import platform.Contacts.*
-import platform.EventKit.*
 import platform.Foundation.*
 import platform.UIKit.UIPasteboard
-import platform.darwin.dispatch_async
-import platform.darwin.dispatch_get_main_queue
-import kotlin.math.abs
 import kotlin.math.floor
 
-@OptIn(ExperimentalForeignApi::class)
 actual object CalendarBridge {
     private var permissionListener: (() -> Unit)? = null
-    private val eventStore = EKEventStore()
 
     private data class StoredIosEvent(
         val id: Long,
@@ -27,43 +19,8 @@ actual object CalendarBridge {
         val excludedStarts: Set<Long>
     )
 
-    private fun stableIdFromString(str: String): Long {
-        var h = 1125899906842597L
-        for (i in 0 until str.length) {
-            h = 31L * h + str[i].code.toLong()
-        }
-        val positive = h and Long.MAX_VALUE
-        return if (positive == 0L) 1L else positive
-    }
-
-    private fun hasSystemCalendarAccess(): Boolean {
-        val status = EKEventStore.authorizationStatusForEntityType(EKEntityTypeEvent)
-        return status == EKAuthorizationStatusAuthorized || status == 3L
-    }
-
-    private fun requestPermissionsIfNeeded() {
-        val calStatus = EKEventStore.authorizationStatusForEntityType(EKEntityTypeEvent)
-        if (calStatus == EKAuthorizationStatusNotDetermined) {
-            eventStore.requestAccessToEntityType(EKEntityTypeEvent) { _, _ ->
-                dispatch_async(dispatch_get_main_queue()) {
-                    permissionListener?.invoke()
-                }
-            }
-        }
-
-        val contactStatus = CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
-        if (contactStatus == CNAuthorizationStatusNotDetermined) {
-            CNContactStore().requestAccessForEntityType(CNEntityTypeContacts) { _, _ ->
-                dispatch_async(dispatch_get_main_queue()) {
-                    permissionListener?.invoke()
-                }
-            }
-        }
-    }
-
     actual fun setPermissionResultListener(listener: () -> Unit) {
         permissionListener = listener
-        requestPermissionsIfNeeded()
     }
 
     actual fun getSystemLanguageCode(): String {
@@ -76,10 +33,10 @@ actual object CalendarBridge {
         val defaults = NSUserDefaults.standardUserDefaults
         val defaultCalId = if (defaults.objectForKey("default_calendar_id") != null) {
             defaults.integerForKey("default_calendar_id").toLong()
-        } else -1L
+        } else 1L
         val lastExpertCalId = if (defaults.objectForKey("posledni_kalendar_id") != null) {
             defaults.integerForKey("posledni_kalendar_id").toLong()
-        } else -1L
+        } else 1L
         val stat = defaults.stringForKey("vybrany_stat") ?: "cz"
         val expert = defaults.boolForKey("expert_mode")
         val duration = if (defaults.objectForKey("default_duration_minutes") != null) {
@@ -116,29 +73,7 @@ actual object CalendarBridge {
         defaults.synchronize()
     }
 
-    private fun getSystemEkCalendars(): List<EKCalendar> {
-        if (!hasSystemCalendarAccess()) return emptyList()
-        return try {
-            eventStore.calendarsForEntityType(EKEntityTypeEvent)
-                .mapNotNull { it as? EKCalendar }
-        } catch (e: Throwable) {
-            emptyList()
-        }
-    }
-
     actual fun getAvailableCalendars(): List<MujKalendar> {
-        val ekCalendars = getSystemEkCalendars()
-        if (ekCalendars.isNotEmpty()) {
-            return ekCalendars.map { cal ->
-                val id = stableIdFromString(cal.calendarIdentifier)
-                MujKalendar(
-                    id = id,
-                    name = cal.title.ifBlank { "Kalendář" },
-                    platformId = cal.calendarIdentifier
-                )
-            }
-        }
-
         return when (getSystemLanguageCode()) {
             "cs" -> listOf(
                 MujKalendar(1L, "Osobní"),
@@ -269,113 +204,19 @@ actual object CalendarBridge {
         return if (matches) targetOccurrenceMillis else null
     }
 
-    private fun rruleStringFromEkEvent(ekEvent: EKEvent): String? {
-        if (!ekEvent.hasRecurrenceRules) return null
-        val rules = ekEvent.recurrenceRules ?: return null
-        val firstRule = rules.firstOrNull() as? EKRecurrenceRule ?: return null
-        val interval = firstRule.interval.toInt()
-        return when (firstRule.frequency) {
-            EKRecurrenceFrequencyDaily -> "FREQ=DAILY"
-            EKRecurrenceFrequencyWeekly -> {
-                if (interval == 2) "FREQ=WEEKLY;INTERVAL=2" else "FREQ=WEEKLY"
-            }
-            EKRecurrenceFrequencyMonthly -> "FREQ=MONTHLY"
-            EKRecurrenceFrequencyYearly -> "FREQ=YEARLY"
-            else -> null
-        }
-    }
-
-    private fun buildEkRecurrenceRule(rrule: String?): EKRecurrenceRule? {
-        if (rrule.isNullOrEmpty()) return null
-        return when {
-            rrule.startsWith("FREQ=DAILY") -> EKRecurrenceRule(
-                EKRecurrenceFrequencyDaily,
-                1L,
-                null
-            )
-            rrule.startsWith("FREQ=WEEKLY;INTERVAL=2") -> EKRecurrenceRule(
-                EKRecurrenceFrequencyWeekly,
-                2L,
-                null
-            )
-            rrule.startsWith("FREQ=WEEKLY") -> EKRecurrenceRule(
-                EKRecurrenceFrequencyWeekly,
-                1L,
-                null
-            )
-            rrule.startsWith("FREQ=MONTHLY") -> EKRecurrenceRule(
-                EKRecurrenceFrequencyMonthly,
-                1L,
-                null
-            )
-            rrule.startsWith("FREQ=YEARLY") -> EKRecurrenceRule(
-                EKRecurrenceFrequencyYearly,
-                1L,
-                null
-            )
-            else -> null
-        }
-    }
-
-    private fun getVisibleSystemCalendars(): List<EKCalendar> {
-        val visibleIds = loadSettings().visibleCalendarIds
-        val allSys = getSystemEkCalendars()
-        if (visibleIds == null) return allSys
-        return allSys.filter { cal ->
-            val idStr = stableIdFromString(cal.calendarIdentifier).toString()
-            visibleIds.contains(idStr) || visibleIds.contains(cal.calendarIdentifier)
-        }
-    }
-
     actual fun getDaysWithEvents(year: Int, monthZeroBased: Int): Set<Int> {
-        val result = mutableSetOf<Int>()
-        val maxDays = getDaysInMonth(year, monthZeroBased)
-
-        if (hasSystemCalendarAccess()) {
-            val sysCals = getVisibleSystemCalendars()
-            if (sysCals.isNotEmpty()) {
-                val monthStartMillis = createMillis(year, monthZeroBased, 1, 0, 0)
-                val monthEndMillis = createMillis(year, monthZeroBased, maxDays, 23, 59) + 59_999L
-                val startDate = NSDate.dateWithTimeIntervalSince1970(monthStartMillis / 1000.0)
-                val endDate = NSDate.dateWithTimeIntervalSince1970(monthEndMillis / 1000.0)
-                try {
-                    val predicate = eventStore.predicateForEventsWithStartDate(startDate, endDate, sysCals)
-                    val ekEvents = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
-                    for (ev in ekEvents) {
-                        val sMillis = ((ev.startDate?.timeIntervalSince1970 ?: continue) * 1000.0).toLong()
-                        val eMillis = ((ev.endDate?.timeIntervalSince1970 ?: (sMillis / 1000.0)) * 1000.0).toLong()
-                        if (ev.allDay) {
-                            for (d in 1..maxDays) {
-                                val dStart = createMillis(year, monthZeroBased, d, 0, 0)
-                                val dEnd = createMillis(year, monthZeroBased, d, 23, 59) + 59_999L
-                                val overlapStart = maxOf(sMillis, dStart)
-                                val overlapEnd = minOf(eMillis, dEnd)
-                                if (overlapEnd - overlapStart >= 6 * 3600_000L) {
-                                    result.add(d)
-                                }
-                            }
-                        } else {
-                            val parts = extractDateTime(sMillis)
-                            if (parts.year == year && parts.monthZeroBased == monthZeroBased) {
-                                result.add(parts.day)
-                            }
-                        }
-                    }
-                } catch (e: Throwable) {}
-            }
-        }
-
         val visibleIds = loadSettings().visibleCalendarIds
-        val localEvents = loadStoredEvents().filter { ev ->
+        val events = loadStoredEvents().filter { ev ->
             visibleIds == null || visibleIds.contains(ev.calendarId.toString())
         }
-        if (localEvents.isNotEmpty()) {
-            for (d in 1..maxDays) {
-                for (ev in localEvents) {
-                    if (occursOnDay(ev, year, monthZeroBased, d) != null) {
-                        result.add(d)
-                        break
-                    }
+        if (events.isEmpty()) return emptySet()
+        val maxDays = getDaysInMonth(year, monthZeroBased)
+        val result = mutableSetOf<Int>()
+        for (d in 1..maxDays) {
+            for (ev in events) {
+                if (occursOnDay(ev, year, monthZeroBased, d) != null) {
+                    result.add(d)
+                    break
                 }
             }
         }
@@ -389,60 +230,12 @@ actual object CalendarBridge {
         untitledText: String,
         allDayText: String
     ): List<Udalost> {
-        val list = mutableListOf<Udalost>()
-        val dayStartMillis = createMillis(year, monthZeroBased, day, 0, 0)
-        val dayEndMillis = createMillis(year, monthZeroBased, day, 23, 59) + 59_999L
-
-        if (hasSystemCalendarAccess()) {
-            val sysCals = getVisibleSystemCalendars()
-            if (sysCals.isNotEmpty()) {
-                val startDate = NSDate.dateWithTimeIntervalSince1970(dayStartMillis / 1000.0)
-                val endDate = NSDate.dateWithTimeIntervalSince1970(dayEndMillis / 1000.0)
-                try {
-                    val predicate = eventStore.predicateForEventsWithStartDate(startDate, endDate, sysCals)
-                    val ekEvents = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
-                    for (ev in ekEvents) {
-                        val sMillis = ((ev.startDate?.timeIntervalSince1970 ?: continue) * 1000.0).toLong()
-                        val eMillis = ((ev.endDate?.timeIntervalSince1970 ?: (sMillis / 1000.0)) * 1000.0).toLong()
-                        val isAllDay = ev.allDay
-
-                        val belongsToDay = if (isAllDay) {
-                            val overlapStart = maxOf(sMillis, dayStartMillis)
-                            val overlapEnd = minOf(eMillis, dayEndMillis)
-                            (overlapEnd - overlapStart) >= 6 * 3600_000L
-                        } else {
-                            sMillis in dayStartMillis..dayEndMillis
-                        }
-
-                        if (!belongsToDay) continue
-
-                        val evIdStr = ev.eventIdentifier ?: "${ev.title}_${sMillis}"
-                        val evLongId = stableIdFromString(evIdStr)
-                        val calLongId = ev.calendar?.calendarIdentifier?.let { stableIdFromString(it) } ?: 1L
-
-                        list.add(
-                            Udalost(
-                                instanceId = sMillis xor evLongId,
-                                eventId = evLongId,
-                                title = (ev.title ?: "").ifBlank { untitledText },
-                                beginTime = sMillis,
-                                calendarId = calLongId,
-                                rrule = rruleStringFromEkEvent(ev),
-                                allDay = isAllDay,
-                                allDayString = allDayText,
-                                platformId = evIdStr
-                            )
-                        )
-                    }
-                } catch (e: Throwable) {}
-            }
-        }
-
         val visibleIds = loadSettings().visibleCalendarIds
-        val localEvents = loadStoredEvents().filter { ev ->
+        val events = loadStoredEvents().filter { ev ->
             visibleIds == null || visibleIds.contains(ev.calendarId.toString())
         }
-        for (ev in localEvents) {
+        val list = mutableListOf<Udalost>()
+        for (ev in events) {
             val occMillis = occursOnDay(ev, year, monthZeroBased, day)
             if (occMillis != null) {
                 list.add(
@@ -459,26 +252,7 @@ actual object CalendarBridge {
                 )
             }
         }
-
-        return list.sortedWith(compareBy<Udalost> { !it.allDay }.thenBy { it.beginTime })
-    }
-
-    private fun findSystemEventInstance(event: Udalost): EKEvent? {
-        if (!hasSystemCalendarAccess()) return null
-        return try {
-            val searchStart = NSDate.dateWithTimeIntervalSince1970((event.beginTime - 86_400_000L) / 1000.0)
-            val searchEnd = NSDate.dateWithTimeIntervalSince1970((event.beginTime + 86_400_000L) / 1000.0)
-            val predicate = eventStore.predicateForEventsWithStartDate(searchStart, searchEnd, null)
-            val matches = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
-            matches.firstOrNull { ek ->
-                val ekId = ek.eventIdentifier ?: ""
-                val ekStart = ((ek.startDate?.timeIntervalSince1970 ?: 0.0) * 1000.0).toLong()
-                (ekId == event.platformId || stableIdFromString(ekId) == event.eventId) &&
-                    abs(ekStart - event.beginTime) < 60_000L
-            } ?: eventStore.eventWithIdentifier(event.platformId)
-        } catch (e: Throwable) {
-            null
-        }
+        return list.sortedBy { it.beginTime }
     }
 
     actual fun saveOrUpdateEvent(
@@ -496,69 +270,8 @@ actual object CalendarBridge {
         rrule: String?,
         isExpertMode: Boolean
     ): Boolean {
-        val newStartMillis = createMillis(year, monthZeroBased, day, hour, minute)
-        val newEndMillis = newStartMillis + durationMinutes * 60_000L
-
-        if (hasSystemCalendarAccess()) {
-            val sysCals = getSystemEkCalendars()
-            val targetEkCal = sysCals.firstOrNull {
-                it.calendarIdentifier == calendar.platformId ||
-                    stableIdFromString(it.calendarIdentifier) == calendar.id
-            }?.takeIf { it.allowsContentModifications }
-                ?: eventStore.defaultCalendarForNewEvents
-                ?: sysCals.firstOrNull { it.allowsContentModifications }
-
-            if (targetEkCal != null) {
-                try {
-                    val ekEvent = if (existingEvent != null) {
-                        findSystemEventInstance(existingEvent) ?: EKEvent.eventWithEventStore(eventStore)
-                    } else {
-                        EKEvent.eventWithEventStore(eventStore)
-                    }
-
-                    ekEvent.title = title
-                    ekEvent.allDay = false
-                    ekEvent.startDate = NSDate.dateWithTimeIntervalSince1970(newStartMillis / 1000.0)
-                    ekEvent.endDate = NSDate.dateWithTimeIntervalSince1970(newEndMillis / 1000.0)
-                    ekEvent.calendar = targetEkCal
-
-                    if (alertMinutes != -1) {
-                        val alarm = EKAlarm.alarmWithRelativeOffset(-(alertMinutes * 60.0))
-                        ekEvent.alarms = listOf(alarm)
-                    } else {
-                        ekEvent.alarms = null
-                    }
-
-                    if (existingEvent == null || editThisAndFuture) {
-                        val existingRules = ekEvent.recurrenceRules?.mapNotNull { it as? EKRecurrenceRule } ?: emptyList()
-                        for (oldRule in existingRules) {
-                            ekEvent.removeRecurrenceRule(oldRule)
-                        }
-                        val newRule = buildEkRecurrenceRule(rrule)
-                        if (newRule != null) {
-                            ekEvent.addRecurrenceRule(newRule)
-                        }
-                    }
-
-                    val span = if (existingEvent != null && !existingEvent.rrule.isNullOrEmpty() && editThisAndFuture) {
-                        EKSpanFutureEvents
-                    } else {
-                        EKSpanThisEvent
-                    }
-
-                    val savedOk = eventStore.saveEvent(ekEvent, span, true, null)
-                    if (savedOk) {
-                        if (isExpertMode && existingEvent == null) {
-                            val cur = loadSettings()
-                            saveSettings(cur.copy(lastExpertCalendarId = calendar.id))
-                        }
-                        return true
-                    }
-                } catch (e: Throwable) {}
-            }
-        }
-
         val all = loadStoredEvents()
+        val newStartMillis = createMillis(year, monthZeroBased, day, hour, minute)
         val nowId = (NSDate().timeIntervalSince1970 * 1000.0).toLong()
 
         if (existingEvent == null) {
@@ -632,22 +345,6 @@ actual object CalendarBridge {
     }
 
     actual fun deleteEvent(event: Udalost, thisAndFuture: Boolean): Boolean {
-        if (hasSystemCalendarAccess()) {
-            val sysEvent = findSystemEventInstance(event)
-            if (sysEvent != null) {
-                try {
-                    val span = if (!event.rrule.isNullOrEmpty() && thisAndFuture) {
-                        EKSpanFutureEvents
-                    } else {
-                        EKSpanThisEvent
-                    }
-                    if (eventStore.removeEvent(sysEvent, span, true, null)) {
-                        return true
-                    }
-                } catch (e: Throwable) {}
-            }
-        }
-
         val all = loadStoredEvents()
         val idx = all.indexOfFirst { it.id == event.eventId }
         if (idx == -1) return false
@@ -670,28 +367,6 @@ actual object CalendarBridge {
     }
 
     actual fun contactMatchesNameDay(nameDayString: String): Boolean {
-        val status = CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
-        if (status != CNAuthorizationStatusAuthorized) return false
-
-        val store = CNContactStore()
-        val jmena = nameDayString.split(Regex("(?i)\\s*(?:/|,|\\ba\\b|\\bi\\b|\\bund\\b|\\band\\b)\\s*"))
-        val keys = listOf(CNContactGivenNameKey, CNContactFamilyNameKey)
-
-        for (jmeno in jmena) {
-            val cisteJmeno = jmeno.trim()
-            if (cisteJmeno.isEmpty() ||
-                cisteJmeno.contains("Svátek", ignoreCase = true) ||
-                cisteJmeno.contains("Nový rok", ignoreCase = true) ||
-                cisteJmeno.contains("Státní", ignoreCase = true)
-            ) {
-                continue
-            }
-            try {
-                val predicate = CNContact.predicateForContactsMatchingName(cisteJmeno)
-                val contacts = store.unifiedContactsMatchingPredicate(predicate, keys, null)
-                if (!contacts.isNullOrEmpty()) return true
-            } catch (e: Throwable) {}
-        }
         return false
     }
 
