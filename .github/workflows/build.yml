@@ -2,7 +2,7 @@ name: Build & Publish KMP (Android + iOS)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 env:
