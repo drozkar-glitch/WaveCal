@@ -1,0 +1,30 @@
+name: iosApp
+options:
+  bundleIdPrefix: cz.mares.wavecal
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  iosApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: iosApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cz.mares.wavecal
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0"
+        INFOPLIST_FILE: iosApp/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_ENABLE_EXPLICIT_MODULES: "NO"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -ObjC
+          - -framework
+          - ComposeApp
+          - -lsqlite3
+        FRAMEWORK_SEARCH_PATHS:
+          - $(inherited)
+          - $(PROJECT_DIR)/../composeApp/build/bin/iosArm64/releaseFramework
+          - $(SRCROOT)/../composeApp/build/bin/iosArm64/releaseFramework

@@ -1,0 +1,683 @@
+name: Build & Publish KMP (Android + iOS)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  APP_NAME: "WaveCal"
+  BUNDLE_ID: "cz.mares.wavecal"
+  APP_VERSION: "1.0"
+  PUBLISH_TO_STORES: "false"
+  BUILD_IOS: "true"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-android:
+    name: Android Release (.apk & .aab)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Fetch Signing Keys from Private Vault (ios-keys)
+        env:
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          mkdir -p iosApp/signing
+          if [ -n "$VAULT_TOKEN" ]; then
+            for f in android_keystore.b64 android_keystore.props gplaykey.json.b64; do
+              curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
+                "https://api.github.com/repos/${OWNER}/ios-keys/contents/${f}" -o "iosApp/signing/${f}" || rm -f "iosApp/signing/${f}"
+            done
+          fi
+
+      - name: Prepare Gradle Wrapper and Build Number
+        run: |
+          BUILD_NUM=$(( ${GITHUB_RUN_NUMBER:-1} + 100 ))
+          echo "PROJECT_BUILD_NUMBER=${BUILD_NUM}" >> $GITHUB_ENV
+          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            mkdir -p /tmp/gw_init
+            echo 'rootProject.name = "init"' > /tmp/gw_init/settings.gradle.kts
+            cd /tmp/gw_init
+            gradle wrapper --gradle-version 8.7 --no-daemon
+            cd - > /dev/null
+            cp -f /tmp/gw_init/gradlew .
+            cp -rf /tmp/gw_init/gradle .
+          fi
+          chmod +x gradlew
+
+      - name: Prepare Android Signing Keystore
+        run: |
+          if [ -s "iosApp/signing/android_keystore.b64" ] && [ -s "iosApp/signing/android_keystore.props" ]; then
+            base64 --decode < iosApp/signing/android_keystore.b64 > /tmp/android_keystore.jks
+            echo "CM_KEYSTORE_PATH=/tmp/android_keystore.jks" >> $GITHUB_ENV
+            while IFS='=' read -r key val; do
+              key=$(echo "$key" | tr -d '\r\n ')
+              val=$(echo "$val" | tr -d '\r\n')
+              if [ -n "$key" ]; then
+                export "${key}=${val}"
+                echo "${key}=${val}" >> $GITHUB_ENV
+              fi
+            done < iosApp/signing/android_keystore.props
+            DETECTED_ALIAS=$(keytool -J-Duser.language=en -list -v -keystore /tmp/android_keystore.jks -storepass "$CM_KEYSTORE_PASSWORD" 2>/dev/null | sed -n 's/^Alias name: //p' | head -n 1 | tr -d '\r\n ')
+            if [ -n "$DETECTED_ALIAS" ]; then
+              echo "Automaticky rozpoznan skutecny alias v keystore: $DETECTED_ALIAS"
+              echo "CM_KEY_ALIAS=$DETECTED_ALIAS" >> $GITHUB_ENV
+            fi
+            echo "Android keystore uspesne nacten."
+          else
+            echo "UPOZORNENI: Android keystore nebyl nalezen, build pobezi bez produkcniho podpisu."
+          fi
+
+      - name: Build Android Release AAB and APK
+        run: |
+          if [ -f "composeApp/build.gradle.kts" ]; then
+            sed -i "s/versionName = \"[0-9.]*\\.\$ciBuildNumber\"/versionName = \"${APP_VERSION}.\$ciBuildNumber\"/g" composeApp/build.gradle.kts || true
+            sed -i "s/versionName = \"[0-9.]*\\.\${ciBuildNumber}\"/versionName = \"${APP_VERSION}.\${ciBuildNumber}\"/g" composeApp/build.gradle.kts || true
+          fi
+          ./gradlew :composeApp:bundleRelease :composeApp:assembleRelease
+          BUILD_NUM="${PROJECT_BUILD_NUMBER}"
+          VERSION_NAME="${APP_VERSION}.${BUILD_NUM}"
+          mv composeApp/build/outputs/apk/release/composeApp-release.apk "composeApp/build/outputs/apk/release/${APP_NAME}-${VERSION_NAME}.apk"
+          mv composeApp/build/outputs/bundle/release/composeApp-release.aab "composeApp/build/outputs/bundle/release/${APP_NAME}-${VERSION_NAME}.aab"
+
+      - name: Upload Android Artifacts (.apk & .aab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-Android-APK-AAB
+          path: |
+            composeApp/build/outputs/apk/release/*.apk
+            composeApp/build/outputs/bundle/release/*.aab
+
+      - name: Publish Android AAB to Google Play
+        run: |
+          if [ "$PUBLISH_TO_STORES" != "true" ]; then
+            echo "Publikace do obchodu je vypnuta (PUBLISH_TO_STORES=false). Preskakuji Google Play upload."
+          elif [ -s "iosApp/signing/gplaykey.json.b64" ]; then
+            echo "Nalezen Google Play klic, dekoduji a nahravam do Google Play..."
+            base64 --decode < iosApp/signing/gplaykey.json.b64 > /tmp/gplay_key.json
+            pip3 install --quiet --break-system-packages google-api-python-client google-auth-httplib2 google-auth-oauthlib || \
+            pip3 install --quiet google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+            python3 - << 'EOF'
+          import os
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from googleapiclient.errors import HttpError
+
+          package_name = os.environ.get("BUNDLE_ID")
+          build_num = os.environ.get("PROJECT_BUILD_NUMBER", "101")
+          app_name = os.environ.get("APP_NAME")
+          app_version = os.environ.get("APP_VERSION", "1.0")
+          aab_path = f"composeApp/build/outputs/bundle/release/{app_name}-{app_version}.{build_num}.aab"
+
+          try:
+              creds = service_account.Credentials.from_service_account_file(
+                  "/tmp/gplay_key.json",
+                  scopes=["https://www.googleapis.com/auth/androidpublisher"]
+              )
+              service = build("androidpublisher", "v3", credentials=creds)
+
+              edit_request = service.edits().insert(body={}, packageName=package_name)
+              result = edit_request.execute()
+              edit_id = result["id"]
+
+              media = MediaFileUpload(aab_path, mimetype="application/octet-stream", resumable=True)
+              bundle_response = service.edits().bundles().upload(
+                  editId=edit_id,
+                  packageName=package_name,
+                  media_body=media
+              ).execute()
+              version_code = bundle_response["versionCode"]
+              print(f"AAB uspesne nahrano (versionCode: {version_code}).")
+
+              try:
+                  service.edits().tracks().update(
+                      editId=edit_id,
+                      track="production",
+                      packageName=package_name,
+                      body={"releases": [{"versionCodes": [str(version_code)], "status": "completed"}]}
+                  ).execute()
+                  print("Prirazeno do kanalu production (completed).")
+              except Exception as track_err:
+                  print(f"Upozorneni (pravdepodobne draft aplikace): {track_err}. Ukladam jako draft...")
+                  service.edits().tracks().update(
+                      editId=edit_id,
+                      track="production",
+                      packageName=package_name,
+                      body={"releases": [{"versionCodes": [str(version_code)], "status": "draft"}]}
+                  ).execute()
+                  print("Prirazeno do kanalu production jako draft.")
+
+              try:
+                  service.edits().commit(editId=edit_id, packageName=package_name).execute()
+                  print("Publikace do Google Play uspesne dokoncena!")
+              except Exception as commit_err:
+                  print(f"Standardni commit vyzaduje rucni potvrzeni v konzoli ({commit_err}), ukladam s changesNotSentForReview=True...")
+                  service.edits().commit(
+                      editId=edit_id,
+                      packageName=package_name,
+                      changesNotSentForReview=True
+                  ).execute()
+                  print("Publikace ulozena do Google Play (changesNotSentForReview=True)! Staci ji potvrdit v Prehledu publikovani.")
+          except HttpError as e:
+              if e.resp.status == 404:
+                  print(f"UPOZORNENI: Balicek '{package_name}' zatim v Google Play Console neexistuje (404 Package not found).")
+                  print("Prvni .aab soubor je nutne do Google Play Console nahrat rucne.")
+              else:
+                  print(f"UPOZORNENI: Chyba Google Play API ({e.resp.status}): {e}.")
+          except Exception as e:
+              print(f"UPOZORNENI: Neocekavana chyba pri nahravani do Google Play: {e}.")
+          EOF
+          else
+            echo "Google Play klic nebyl nalezen, preskakuji Google Play upload."
+          fi
+
+  build-ios:
+    name: iOS Release (.ipa & TestFlight)
+    runs-on: macos-latest
+    if: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Fetch Signing Keys from Private Vault (ios-keys)
+        env:
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          mkdir -p iosApp/signing
+          if [ -n "$VAULT_TOKEN" ]; then
+            for f in ioskey.p12.b64 ioskey.pwd apple_api_key.p8.b64 apple_api_key.props; do
+              curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
+                "https://api.github.com/repos/${OWNER}/ios-keys/contents/${f}" -o "iosApp/signing/${f}" || rm -f "iosApp/signing/${f}"
+            done
+          fi
+
+      - name: Build KMP iOS Framework, Sign and Package IPA
+        run: |
+          if [ "$BUILD_IOS" != "true" ]; then
+            echo "iOS build je vypnuty (rezim Pouze Android). Preskakuji."
+            exit 0
+          fi
+          export PATH="$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          BUILD_NUM=$(( ${GITHUB_RUN_NUMBER:-1} + 100 ))
+          export PROJECT_BUILD_NUMBER="${BUILD_NUM}"
+
+          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            mkdir -p /tmp/gw_init
+            echo 'rootProject.name = "init"' > /tmp/gw_init/settings.gradle.kts
+            cd /tmp/gw_init
+            gradle wrapper --gradle-version 8.7 --no-daemon
+            cd - > /dev/null
+            cp -f /tmp/gw_init/gradlew .
+            cp -rf /tmp/gw_init/gradle .
+          fi
+          chmod +x gradlew
+
+          ./gradlew :composeApp:linkReleaseFrameworkIosArm64
+
+          if ! command -v xcodegen &> /dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+
+          mkdir -p iosApp/iosApp/Assets.xcassets/AppIcon.appiconset
+          cat << 'EOF' > iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/Contents.json
+          {
+            "images" : [
+              {
+                "filename" : "app-icon-1024.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : {
+              "author" : "xcode",
+              "version" : 1
+            }
+          }
+          EOF
+
+          if [ ! -f "iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png" ]; then
+            python3 - << 'EOF'
+          import zlib, struct
+          w, h = 1024, 1024
+          raw = bytearray()
+          for y in range(h):
+              raw.append(0)
+              raw.extend(b'\x1e\x29\x3b' * w)
+          def chunk(t, d):
+              return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b'')
+          with open('iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png', 'wb') as f:
+              f.write(png)
+          EOF
+          fi
+
+          if [ ! -f "iosApp/iosApp/Info.plist" ]; then
+            cat << 'EOF' > iosApp/iosApp/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>cs</string>
+            <key>CFBundleExecutable</key>
+            <string>$(EXECUTABLE_NAME)</string>
+            <key>CFBundleIdentifier</key>
+            <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>$(PRODUCT_NAME)</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>$(MARKETING_VERSION)</string>
+            <key>CFBundleVersion</key>
+            <string>$(CURRENT_PROJECT_VERSION)</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>CADisableMinimumFrameDurationOnPhone</key>
+            <true/>
+            <key>ITSAppUsesNonExemptEncryption</key>
+            <false/>
+            <key>UIApplicationSceneManifest</key>
+            <dict>
+              <key>UIApplicationSupportsMultipleScenes</key>
+              <false/>
+            </dict>
+            <key>UILaunchScreen</key>
+            <dict/>
+            <key>UIRequiresFullScreen</key>
+            <true/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+              <string>UIInterfaceOrientationPortraitUpsideDown</string>
+              <string>UIInterfaceOrientationLandscapeLeft</string>
+              <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+            <key>UISupportedInterfaceOrientations~ipad</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+              <string>UIInterfaceOrientationPortraitUpsideDown</string>
+              <string>UIInterfaceOrientationLandscapeLeft</string>
+              <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+          </dict>
+          </plist>
+          EOF
+          else
+            plutil -replace CFBundleExecutable -string '$(EXECUTABLE_NAME)' iosApp/iosApp/Info.plist || true
+            plutil -replace CFBundleIdentifier -string '$(PRODUCT_BUNDLE_IDENTIFIER)' iosApp/iosApp/Info.plist || true
+            plutil -replace CFBundleName -string '$(PRODUCT_NAME)' iosApp/iosApp/Info.plist || true
+            plutil -replace CFBundlePackageType -string 'APPL' iosApp/iosApp/Info.plist || true
+            plutil -replace CFBundleShortVersionString -string '$(MARKETING_VERSION)' iosApp/iosApp/Info.plist || true
+            plutil -replace CFBundleVersion -string '$(CURRENT_PROJECT_VERSION)' iosApp/iosApp/Info.plist || true
+          fi
+
+          FW_PATH="$(pwd)/composeApp/build/bin/iosArm64/releaseFramework"
+          cat << EOF > iosApp/project.yml
+          name: iosApp
+          options:
+            xcodeVersion: "15.0"
+            bundleIdPrefix: cz.mares
+            deploymentTarget:
+              iOS: "15.0"
+          targets:
+            iosApp:
+              type: application
+              platform: iOS
+              deploymentTarget: "15.0"
+              sources:
+                - path: iosApp
+                  excludes:
+                    - "signing/**"
+                    - "Info.plist"
+                    - "*.entitlements"
+              settings:
+                base:
+                  SWIFT_VERSION: "5.0"
+                  PRODUCT_NAME: "${APP_NAME}"
+                  PRODUCT_BUNDLE_IDENTIFIER: "${BUNDLE_ID}"
+                  MARKETING_VERSION: "${APP_VERSION}"
+                  CURRENT_PROJECT_VERSION: "${BUILD_NUM}"
+                  SDKROOT: iphoneos
+                  TARGETED_DEVICE_FAMILY: "1,2"
+                  IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+                  GENERATE_INFOPLIST_FILE: NO
+                  INFOPLIST_FILE: iosApp/Info.plist
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  ENABLE_USER_SCRIPT_SANDBOXING: NO
+                  SWIFT_ENABLE_EXPLICIT_MODULES: NO
+                  FRAMEWORK_SEARCH_PATHS:
+                    - "\$(inherited)"
+                    - "${FW_PATH}"
+                  OTHER_LDFLAGS:
+                    - "\$(inherited)"
+                    - "-ObjC"
+                    - "-framework"
+                    - "ComposeApp"
+                    - "-lsqlite3"
+                  ENABLE_BITCODE: NO
+          schemes:
+            iosApp:
+              build:
+                targets:
+                  iosApp: all
+          EOF
+
+          cd iosApp
+          xcodegen generate
+          sed -i '' 's/objectVersion = [0-9]*;/objectVersion = 56;/g' iosApp.xcodeproj/project.pbxproj
+          cd ..
+
+          if [ ! -s "iosApp/signing/ioskey.p12.b64" ] || [ ! -s "iosApp/signing/apple_api_key.p8.b64" ]; then
+            echo "Chybi iOS certifikat (.p12) nebo Apple API klic (.p8) v trezoru ios-keys! Nahraj je do ios-keys pres StavitelAplikaci.html."
+            exit 1
+          fi
+
+          pip3 install --quiet --break-system-packages codemagic-cli-tools || \
+          pip3 install --quiet codemagic-cli-tools
+
+          base64 --decode < iosApp/signing/ioskey.p12.b64 > /tmp/certificate.p12
+          CERT_PWD=$(cat iosApp/signing/ioskey.pwd | tr -d '\r\n')
+
+          base64 --decode < iosApp/signing/apple_api_key.p8.b64 > /tmp/AuthKey.p8
+          while IFS='=' read -r key val; do
+            key=$(echo "$key" | tr -d '\r\n ')
+            val=$(echo "$val" | tr -d '\r\n')
+            if [ -n "$key" ]; then
+              export "${key}=${val}"
+            fi
+          done < iosApp/signing/apple_api_key.props
+
+          openssl pkcs12 -in /tmp/certificate.p12 -nocerts -nodes -passin pass:"$CERT_PWD" -out /tmp/cert_key_raw.pem || \
+          openssl pkcs12 -legacy -in /tmp/certificate.p12 -nocerts -nodes -passin pass:"$CERT_PWD" -out /tmp/cert_key_raw.pem
+          openssl pkey -in /tmp/cert_key_raw.pem -out /tmp/cert_key.pem
+
+          keychain initialize
+
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key=@file:/tmp/cert_key.pem \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --private-key "@file:/tmp/AuthKey.p8" \
+            --create
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          for prof in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision; do
+            if [ -f "$prof" ]; then
+              cp -f "$prof" "$HOME/Library/MobileDevice/Provisioning Profiles/"
+              UUID=$(security cms -D -i "$prof" | plutil -extract UUID raw - 2>/dev/null || true)
+              if [ -n "$UUID" ]; then
+                cp -f "$prof" "$HOME/Library/MobileDevice/Provisioning Profiles/${UUID}.mobileprovision"
+                cp -f "$prof" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/${UUID}.mobileprovision"
+              fi
+            fi
+          done
+
+          keychain add-certificates \
+            --certificate /tmp/certificate.p12 \
+            --certificate-password "$CERT_PWD"
+
+          xcode-project use-profiles --project "iosApp/iosApp.xcodeproj"
+
+          mkdir -p build/ios/xcarchive build/ios/ipa
+          xcodebuild -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/ios/xcarchive/iosApp.xcarchive \
+            archive \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+          xcodebuild -exportArchive \
+            -archivePath build/ios/xcarchive/iosApp.xcarchive \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist "$HOME/export_options.plist"
+
+          if [ "$PUBLISH_TO_STORES" = "true" ]; then
+            echo "Nahravam .ipa do Apple App Store Connect (TestFlight)..."
+            app-store-connect publish \
+              --path build/ios/ipa/*.ipa \
+              --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+              --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+              --private-key "@file:/tmp/AuthKey.p8"
+
+            echo "Kontroluji stav v App Store Connect (uklid prazdnych Draft Submissions a kontrola Waiting for Review)..."
+            pip3 install --quiet --break-system-packages pyjwt cryptography requests || \
+            pip3 install --quiet pyjwt cryptography requests
+
+            python3 - << 'EOF'
+          import os, sys, time, jwt, requests
+
+          key_id = os.environ.get("APP_STORE_CONNECT_KEY_IDENTIFIER", "").strip()
+          issuer_id = os.environ.get("APP_STORE_CONNECT_ISSUER_ID", "").strip()
+          bundle_id = os.environ.get("BUNDLE_ID", "").strip()
+          build_num = os.environ.get("PROJECT_BUILD_NUMBER", "101").strip()
+          key_path = "/tmp/AuthKey.p8"
+
+          if not key_id or not issuer_id or not os.path.exists(key_path):
+              print("Chybi udaje Apple API klice pro kontrolu stavu v App Store Connect.")
+              sys.exit(0)
+
+          with open(key_path, "r") as f:
+              private_key = f.read()
+
+          def get_headers():
+              now = int(time.time())
+              payload = {
+                  "iss": issuer_id,
+                  "iat": now - 30,
+                  "exp": now + 1100,
+                  "aud": "appstoreconnect-v1"
+              }
+              token = jwt.encode(payload, private_key, algorithm="ES256", headers={"kid": key_id, "typ": "JWT"})
+              if isinstance(token, bytes):
+                  token = token.decode("utf-8")
+              return {
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json"
+              }
+
+          base_url = "https://api.appstoreconnect.apple.com/v1"
+
+          try:
+              r = requests.get(f"{base_url}/apps", params={"filter[bundleId]": bundle_id}, headers=get_headers(), timeout=30)
+              apps = r.json().get("data", []) if r.ok else []
+              if not apps:
+                  print(f"Aplikace s Bundle ID '{bundle_id}' zatim v App Store Connect neni zalozena. Build je nahrany v TestFlightu.")
+                  sys.exit(0)
+              app_id = apps[0]["id"]
+
+              def cleanup_empty_draft_submissions():
+                  sub_res = requests.get(
+                      f"{base_url}/reviewSubmissions",
+                      params={"filter[app]": app_id, "filter[state]": "READY_FOR_REVIEW,UNRESOLVED_ISSUES"},
+                      headers=get_headers(),
+                      timeout=30
+                  )
+                  if not sub_res.ok:
+                      return
+                  for sub in sub_res.json().get("data", []):
+                      sub_id = sub["id"]
+                      items_res = requests.get(f"{base_url}/reviewSubmissions/{sub_id}/items", headers=get_headers(), timeout=30)
+                      items = items_res.json().get("data", []) if items_res.ok else []
+                      if len(items) == 0:
+                          print(f"Mazu prazdny visici Draft Submission ({sub_id})...")
+                          cancel_body = {
+                              "data": {
+                                  "type": "reviewSubmissions",
+                                  "id": sub_id,
+                                  "attributes": {"canceled": True}
+                              }
+                          }
+                          requests.patch(f"{base_url}/reviewSubmissions/{sub_id}", json=cancel_body, headers=get_headers(), timeout=30)
+
+              cleanup_empty_draft_submissions()
+
+              ver_res = requests.get(
+                  f"{base_url}/apps/{app_id}/appStoreVersions",
+                  params={"filter[platform]": "IOS"},
+                  headers=get_headers(),
+                  timeout=30
+              )
+              versions = ver_res.json().get("data", []) if ver_res.ok else []
+              if not versions:
+                  print("V App Store Connect nebyla nalezena zadna iOS verze.")
+                  sys.exit(0)
+
+              target_version = versions[0]
+              version_id = target_version["id"]
+              attrs = target_version.get("attributes", {})
+              state = attrs.get("appStoreState") or attrs.get("appVersionState") or ""
+              ver_str = attrs.get("versionString", "1.0")
+              print(f"Nalezena iOS verze {ver_str} (ID: {version_id}) ve stavu: {state}")
+
+              waiting_states = {
+                  "WAITING_FOR_REVIEW",
+                  "IN_REVIEW",
+                  "PENDING_DEVELOPER_RELEASE",
+                  "PENDING_APPLE_RELEASE",
+                  "PROCESSING_FOR_APP_STORE",
+                  "READY_FOR_SALE"
+              }
+              if state in waiting_states:
+                  print(f"Aplikace uz je ve stavu '{state}'. Nezakladam novou zadost ke schvaleni a ponechavam aktualni stav.")
+                  cleanup_empty_draft_submissions()
+                  sys.exit(0)
+
+              editable_states = {
+                  "PREPARE_FOR_SUBMISSION",
+                  "DEVELOPER_REJECTED",
+                  "REJECTED",
+                  "METADATA_REJECTED",
+                  "INVALID_BINARY"
+              }
+              if state in editable_states:
+                  valid_build_id = None
+                  print(f"Hledam zpracovany build {build_num} pro prirazeni k verzi {ver_str}...")
+                  for attempt in range(1, 13):
+                      b_res = requests.get(
+                          f"{base_url}/builds",
+                          params={"filter[app]": app_id, "filter[version]": build_num},
+                          headers=get_headers(),
+                          timeout=30
+                      )
+                      builds = b_res.json().get("data", []) if b_res.ok else []
+                      if builds:
+                          b_state = builds[0].get("attributes", {}).get("processingState", "")
+                          if b_state == "VALID":
+                              valid_build_id = builds[0]["id"]
+                              print(f"Build {build_num} je zpracovany a platny (VALID).")
+                              break
+                          print(f"Pokus {attempt}/12: Build {build_num} se v Applu zpracovava ({b_state}), cekam 15 s...")
+                      else:
+                          print(f"Pokus {attempt}/12: Build {build_num} se v seznamu zatim neobjevil, cekam 15 s...")
+                      time.sleep(15)
+
+                  if valid_build_id:
+                      rel_body = {"data": {"type": "builds", "id": valid_build_id}}
+                      rel_res = requests.patch(
+                          f"{base_url}/appStoreVersions/{version_id}/relationships/build",
+                          json=rel_body,
+                          headers=get_headers(),
+                          timeout=30
+                      )
+                      if rel_res.ok:
+                          print(f"Build {build_num} byl prirazen k iOS verzi {ver_str}.")
+                      else:
+                          print(f"Upozorneni pri prirazovani buildu: {rel_res.status_code} {rel_res.text}")
+
+                  cleanup_empty_draft_submissions()
+
+                  create_sub_body = {
+                      "data": {
+                          "type": "reviewSubmissions",
+                          "attributes": {"platform": "IOS"},
+                          "relationships": {
+                              "app": {"data": {"type": "apps", "id": app_id}}
+                          }
+                      }
+                  }
+                  sub_create_res = requests.post(f"{base_url}/reviewSubmissions", json=create_sub_body, headers=get_headers(), timeout=30)
+                  if sub_create_res.ok:
+                      new_sub_id = sub_create_res.json()["data"]["id"]
+                      item_body = {
+                          "data": {
+                              "type": "reviewSubmissionItems",
+                              "relationships": {
+                                  "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": new_sub_id}},
+                                  "appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}}
+                              }
+                          }
+                      }
+                      item_res = requests.post(f"{base_url}/reviewSubmissionItems", json=item_body, headers=get_headers(), timeout=30)
+                      if item_res.ok:
+                          submit_body = {
+                              "data": {
+                                  "type": "reviewSubmissions",
+                                  "id": new_sub_id,
+                                  "attributes": {"submitted": True}
+                              }
+                          }
+                          submit_res = requests.patch(f"{base_url}/reviewSubmissions/{new_sub_id}", json=submit_body, headers=get_headers(), timeout=30)
+                          if submit_res.ok:
+                              print(f"Verze {ver_str} byla uspesne odeslana ke schvaleni (Waiting for Review)!")
+                          else:
+                              print(f"Verzi nelze automaticky odeslat ke schvaleni (pravdepodobne chybi metadata/snimky): {submit_res.status_code}. Uklizim rozpracovany Draft Submission...")
+                              item_id = item_res.json().get("data", {}).get("id")
+                              if item_id:
+                                  requests.delete(f"{base_url}/reviewSubmissionItems/{item_id}", headers=get_headers(), timeout=30)
+                              cancel_body = {
+                                  "data": {
+                                      "type": "reviewSubmissions",
+                                      "id": new_sub_id,
+                                      "attributes": {"canceled": True}
+                                  }
+                              }
+                              requests.patch(f"{base_url}/reviewSubmissions/{new_sub_id}", json=cancel_body, headers=get_headers(), timeout=30)
+                      else:
+                          print(f"Verzi nelze vlozit do zadosti ({item_res.status_code}). Uklizim prazdny Draft Submission...")
+                          cancel_body = {
+                              "data": {
+                                  "type": "reviewSubmissions",
+                                  "id": new_sub_id,
+                                  "attributes": {"canceled": True}
+                              }
+                          }
+                          requests.patch(f"{base_url}/reviewSubmissions/{new_sub_id}", json=cancel_body, headers=get_headers(), timeout=30)
+                  cleanup_empty_draft_submissions()
+          except Exception as e:
+              print(f"Upozorneni pri komunikaci s App Store Connect API: {e}")
+          EOF
+          else
+            echo "Publikace do obchodu je vypnuta (PUBLISH_TO_STORES=false). Preskakuji TestFlight upload."
+          fi
+
+      - name: Upload iOS Artifact (.ipa)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-iOS-IPA
+          path: build/ios/ipa/*.ipa

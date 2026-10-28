@@ -1,0 +1,269 @@
+workflows:
+  kmp-release-workflow:
+    name: WaveCal Android & iOS Release Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Apple API klic
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+        - pattern: 'master'
+          include: true
+          source: true
+    environment:
+      android_signing:
+        - wavecalkey
+      vars:
+        APP_NAME: "WaveCal"
+        BUNDLE_ID: "cz.mares.wavecal"
+        XCODE_PROJECT: "iosApp/iosApp.xcodeproj"
+        XCODE_SCHEME: "iosApp"
+      java: 17
+      xcode: latest
+    scripts:
+      - name: Generate Gradle Wrapper
+        script: |
+          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x gradlew
+
+      - name: Build Android Release AAB and APK and Publish to Google Play
+        script: |
+          ./gradlew :composeApp:bundleRelease :composeApp:assembleRelease
+          BUILD_NUM="${PROJECT_BUILD_NUMBER:-1}"
+          VERSION_NAME="1.0.${BUILD_NUM}"
+          AAB_PATH="composeApp/build/outputs/bundle/release/${APP_NAME}-${VERSION_NAME}.aab"
+          APK_PATH="composeApp/build/outputs/apk/release/${APP_NAME}-${VERSION_NAME}.apk"
+          mv composeApp/build/outputs/apk/release/composeApp-release.apk "$APK_PATH"
+          mv composeApp/build/outputs/bundle/release/composeApp-release.aab "$AAB_PATH"
+
+          if [ -f "iosApp/signing/gplaykey.json.b64" ]; then
+            echo "Nalezen Google Play klic z repozitare ios-keys, odesilam AAB do Google Play..."
+            base64 --decode -i iosApp/signing/gplaykey.json.b64 -o /tmp/gplay_key.json
+            python3 -m pip install --quiet --break-system-packages google-api-python-client google-auth-httplib2 google-auth || python3 -m pip install --quiet google-api-python-client google-auth-httplib2 google-auth
+            python3 - "$BUNDLE_ID" "$AAB_PATH" << 'EOF'
+          import sys, re
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          bundle_id = sys.argv[1]
+          aab_file = sys.argv[2]
+
+          candidates = [bundle_id]
+          try:
+              with open("composeApp/build.gradle.kts", "r", encoding="utf-8") as f:
+                  m = re.search(r'applicationId\s*=\s*"([^"]+)"', f.read())
+                  if m and m.group(1) not in candidates:
+                      candidates.insert(0, m.group(1))
+          except Exception:
+              pass
+
+          creds = service_account.Credentials.from_service_account_file(
+              '/tmp/gplay_key.json',
+              scopes=['https://www.googleapis.com/auth/androidpublisher']
+          )
+          print(f"Pouzity servisni ucet: {creds.service_account_email}")
+          service = build('androidpublisher', 'v3', credentials=creds)
+
+          for pkg in candidates:
+              try:
+                  print(f"Zkousim nahrani do Google Play pro balicek: {pkg} ...")
+                  edit_id = service.edits().insert(body={}, packageName=pkg).execute()['id']
+                  bundle_res = service.edits().bundles().upload(
+                      editId=edit_id,
+                      packageName=pkg,
+                      media_body=MediaFileUpload(aab_file, mimetype='application/octet-stream', resumable=True)
+                  ).execute()
+                  version_code = str(bundle_res['versionCode'])
+                  for trk in ['production', 'internal']:
+                      try:
+                          service.edits().tracks().update(
+                              editId=edit_id,
+                              track=trk,
+                              packageName=pkg,
+                              body={'releases': [{'versionCodes': [version_code], 'status': 'completed'}]}
+                          ).execute()
+                          print(f"Prirazeno do kanalu '{trk}' (status: completed).")
+                          break
+                      except Exception:
+                          try:
+                              service.edits().tracks().update(
+                                  editId=edit_id,
+                                  track=trk,
+                                  packageName=pkg,
+                                  body={'releases': [{'versionCodes': [version_code], 'status': 'draft'}]}
+                              ).execute()
+                              print(f"Prirazeno do kanalu '{trk}' (status: draft).")
+                              break
+                          except Exception:
+                              continue
+                  service.edits().commit(editId=edit_id, packageName=pkg).execute()
+                  print(f"HOTOVO: AAB (verze {version_code}) bylo uspesne nahrano do Google Play ({pkg})!")
+                  break
+              except Exception as e:
+                  print(f"Chyba pro {pkg}: {e}")
+          EOF
+            rm -f /tmp/gplay_key.json
+          fi
+
+      - name: Generate Xcode Project, Auto-Register iOS Profile and Build IPA
+        script: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+          ./gradlew :composeApp:linkReleaseFrameworkIosArm64
+
+          if ! command -v xcodegen &> /dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+
+          python3 -m pip install --quiet --break-system-packages Pillow || python3 -m pip install --quiet Pillow
+          python3 - << 'EOF'
+          import os, glob, json, math
+          from PIL import Image, ImageDraw
+
+          icon_dir = "iosApp/iosApp/Assets.xcassets/AppIcon.appiconset"
+          os.makedirs(icon_dir, exist_ok=True)
+          with open("iosApp/iosApp/Assets.xcassets/Contents.json", "w") as f:
+              json.dump({"info": {"version": 1, "author": "xcode"}}, f, indent=2)
+
+          candidates = []
+          for pattern in [
+              "composeApp/src/androidMain/res/mipmap-xxxhdpi/ic_launcher.*",
+              "composeApp/src/androidMain/res/mipmap-xxhdpi/ic_launcher.*",
+              "composeApp/src/androidMain/res/mipmap-xhdpi/ic_launcher.*",
+              "composeApp/src/androidMain/res/mipmap-hdpi/ic_launcher.*",
+              "composeApp/src/androidMain/res/mipmap-mdpi/ic_launcher.*",
+              "composeApp/src/androidMain/res/drawable*/ic_launcher.*",
+              "app/src/main/res/mipmap-xxxhdpi/ic_launcher.*",
+              "app/src/main/res/mipmap-xxhdpi/ic_launcher.*"
+          ]:
+              for p in glob.glob(pattern):
+                  if p.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                      candidates.append(p)
+
+          base = None
+          if candidates:
+              best_path = max(candidates, key=lambda p: os.path.getsize(p))
+              print(f"Pouzivam puvodni Android ikonu: {best_path}")
+              src = Image.open(best_path).convert("RGBA")
+              bg = Image.new("RGBA", src.size, (18, 28, 45, 255))
+              merged = Image.alpha_composite(bg, src).convert("RGB")
+              base = merged.resize((1024, 1024), Image.Resampling.LANCZOS)
+          else:
+              print("Rastrova Android ikona nenalezena, generuji ikonu kalendare WaveCal...")
+              base = Image.new("RGB", (1024, 1024), (15, 23, 42))
+              draw = ImageDraw.Draw(base)
+              # Karta kalendare
+              draw.rounded_rectangle([140, 180, 884, 884], radius=96, fill=(248, 250, 252))
+              # Horni lista kalendare
+              draw.rounded_rectangle([140, 180, 884, 370], radius=96, fill=(2, 132, 199))
+              draw.rectangle([140, 290, 884, 370], fill=(2, 132, 199))
+              # Krouzky vazby nahore
+              for rx in [310, 512, 714]:
+                  draw.rounded_rectangle([rx - 28, 120, rx + 28, 230], radius=24, fill=(226, 232, 240))
+                  draw.rounded_rectangle([rx - 16, 132, rx + 16, 218], radius=14, fill=(71, 85, 105))
+              # Mrizka dnu kalendare
+              cols = [260, 386, 512, 638, 764]
+              rows = [450, 560, 670]
+              for r_idx, ry in enumerate(rows):
+                  for c_idx, cx in enumerate(cols):
+                      if r_idx == 1 and c_idx == 2:
+                          draw.rounded_rectangle([cx - 44, ry - 44, cx + 44, ry + 44], radius=22, fill=(239, 68, 68))
+                      else:
+                          draw.rounded_rectangle([cx - 36, ry - 36, cx + 36, ry + 36], radius=16, fill=(203, 213, 225))
+              # Typicka modra vlna WaveCal ve spodni casti
+              wave_pts = []
+              for x in range(180, 845, 8):
+                  y = 795 + int(28 * math.sin((x - 180) * 2.0 * math.pi / 330.0))
+                  wave_pts.append((x, y))
+              draw.line(wave_pts, fill=(14, 165, 233), width=28)
+
+          specs = [
+              ("iphone", "20x20", "2x", 40),
+              ("iphone", "20x20", "3x", 60),
+              ("iphone", "29x29", "2x", 58),
+              ("iphone", "29x29", "3x", 87),
+              ("iphone", "40x40", "2x", 80),
+              ("iphone", "40x40", "3x", 120),
+              ("iphone", "60x60", "2x", 120),
+              ("iphone", "60x60", "3x", 180),
+              ("ipad", "20x20", "1x", 20),
+              ("ipad", "20x20", "2x", 40),
+              ("ipad", "29x29", "1x", 29),
+              ("ipad", "29x29", "2x", 58),
+              ("ipad", "40x40", "1x", 40),
+              ("ipad", "40x40", "2x", 80),
+              ("ipad", "76x76", "1x", 76),
+              ("ipad", "76x76", "2x", 152),
+              ("ipad", "83.5x83.5", "2x", 167),
+              ("ios-marketing", "1024x1024", "1x", 1024),
+          ]
+
+          images_json = []
+          for idiom, size_str, scale, px in specs:
+              fname = f"icon_{idiom}_{size_str}_{scale}.png"
+              img = base.resize((px, px), Image.Resampling.LANCZOS)
+              img.save(os.path.join(icon_dir, fname), format="PNG")
+              images_json.append({
+                  "idiom": idiom,
+                  "size": size_str,
+                  "scale": scale,
+                  "filename": fname
+              })
+
+          with open(os.path.join(icon_dir, "Contents.json"), "w") as f:
+              json.dump({"images": images_json, "info": {"version": 1, "author": "xcode"}}, f, indent=2)
+          EOF
+
+          BUILD_NUM="${PROJECT_BUILD_NUMBER:-1}"
+          sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: \"$BUILD_NUM\"/g" iosApp/project.yml
+
+          cd iosApp
+          xcodegen generate
+          cd ..
+
+          if [ ! -f "iosApp/signing/ioskey.p12.b64" ]; then
+            echo "Chybi soubor iosApp/signing/ioskey.p12.b64! Nahraj nejprve certifikat do soukromeho repozitare ios-keys pres StavitelAplikaci.html."
+            exit 1
+          fi
+
+          base64 --decode -i iosApp/signing/ioskey.p12.b64 -o /tmp/certificate.p12
+          CERT_PWD=$(cat iosApp/signing/ioskey.pwd | tr -d '\r\n')
+
+          openssl pkcs12 -in /tmp/certificate.p12 -nocerts -nodes -passin pass:"$CERT_PWD" -out /tmp/cert_key_raw.pem || \
+          openssl pkcs12 -legacy -in /tmp/certificate.p12 -nocerts -nodes -passin pass:"$CERT_PWD" -out /tmp/cert_key_raw.pem
+          openssl pkey -in /tmp/cert_key_raw.pem -out /tmp/cert_key_raw.pem.clean
+          mv /tmp/cert_key_raw.pem.clean /tmp/cert_key.pem
+
+          keychain initialize
+
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key=@file:/tmp/cert_key.pem \
+            --create
+
+          keychain add-certificates \
+            --certificate /tmp/certificate.p12 \
+            --certificate-password "$CERT_PWD"
+
+          xcode-project use-profiles --project "$XCODE_PROJECT"
+
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - composeApp/build/outputs/bundle/release/*.aab
+      - composeApp/build/outputs/apk/release/*.apk
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: false
+        submit_to_app_store: true
