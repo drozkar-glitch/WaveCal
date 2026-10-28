@@ -34,10 +34,19 @@ jobs:
         run: |
           mkdir -p iosApp/signing
           if [ -n "$VAULT_TOKEN" ]; then
-            for f in android_keystore.b64 android_keystore.props gplaykey.json.b64; do
+            if curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/${OWNER}/ios-keys/contents/android_keystore_${APP_NAME}.b64" -o "iosApp/signing/android_keystore.b64" && \
               curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
-                "https://api.github.com/repos/${OWNER}/ios-keys/contents/${f}" -o "iosApp/signing/${f}" || rm -f "iosApp/signing/${f}"
-            done
+              "https://api.github.com/repos/${OWNER}/ios-keys/contents/android_keystore_${APP_NAME}.props" -o "iosApp/signing/android_keystore.props"; then
+              echo "Nacten vlastni Android keystore pro projekt ${APP_NAME} z ios-keys."
+            else
+              for f in android_keystore.b64 android_keystore.props; do
+                curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
+                  "https://api.github.com/repos/${OWNER}/ios-keys/contents/${f}" -o "iosApp/signing/${f}" || rm -f "iosApp/signing/${f}"
+              done
+            fi
+            curl -sfL -H "Authorization: Bearer $VAULT_TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/${OWNER}/ios-keys/contents/gplaykey.json.b64" -o "iosApp/signing/gplaykey.json.b64" || rm -f "iosApp/signing/gplaykey.json.b64"
           fi
 
       - name: Prepare Gradle Wrapper and Build Number
@@ -129,7 +138,7 @@ jobs:
               service = build("androidpublisher", "v3", credentials=creds)
 
               edit_request = service.edits().insert(body={}, packageName=package_name)
-              result = edit_request.execute()
+              result = edit_request.execute(num_retries=5)
               edit_id = result["id"]
 
               media = MediaFileUpload(aab_path, mimetype="application/octet-stream", resumable=True)
@@ -137,7 +146,7 @@ jobs:
                   editId=edit_id,
                   packageName=package_name,
                   media_body=media
-              ).execute()
+              ).execute(num_retries=5)
               version_code = bundle_response["versionCode"]
               print(f"AAB uspesne nahrano (versionCode: {version_code}).")
 
@@ -147,7 +156,7 @@ jobs:
                       track="production",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "completed"}]}
-                  ).execute()
+                  ).execute(num_retries=5)
                   print("Prirazeno do kanalu production (completed).")
               except Exception as track_err:
                   print(f"Upozorneni (pravdepodobne draft aplikace): {track_err}. Ukladam jako draft...")
@@ -156,11 +165,11 @@ jobs:
                       track="production",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "draft"}]}
-                  ).execute()
+                  ).execute(num_retries=5)
                   print("Prirazeno do kanalu production jako draft.")
 
               try:
-                  service.edits().commit(editId=edit_id, packageName=package_name).execute()
+                  service.edits().commit(editId=edit_id, packageName=package_name).execute(num_retries=5)
                   print("Publikace do Google Play uspesne dokoncena!")
               except Exception as commit_err:
                   print(f"Standardni commit vyzaduje rucni potvrzeni v konzoli ({commit_err}), ukladam s changesNotSentForReview=True...")
@@ -168,7 +177,7 @@ jobs:
                       editId=edit_id,
                       packageName=package_name,
                       changesNotSentForReview=True
-                  ).execute()
+                  ).execute(num_retries=5)
                   print("Publikace ulozena do Google Play (changesNotSentForReview=True)! Staci ji potvrdit v Prehledu publikovani.")
           except HttpError as e:
               if e.resp.status == 404:
@@ -265,7 +274,8 @@ jobs:
               raw.extend(b'\x1e\x29\x3b' * w)
           def chunk(t, d):
               return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b'')
+          png = b'\x89PNG\r
+\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b'')
           with open('iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png', 'wb') as f:
               f.write(png)
           EOF
@@ -681,4 +691,3 @@ jobs:
         with:
           name: ${{ env.APP_NAME }}-iOS-IPA
           path: build/ios/ipa/*.ipa
-# Sync: 2026-10-28T14:57:00.299Z
