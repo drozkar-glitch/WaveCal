@@ -5,6 +5,7 @@ import java.io.DataOutputStream
 import java.io.File
 import java.util.zip.CRC32
 import java.util.zip.DeflaterOutputStream
+import kotlin.math.abs
 import kotlin.math.sin
 
 plugins {
@@ -149,7 +150,7 @@ val generateIosAppIcon by tasks.registering {
 
                 if (x in 180..844) {
                     val waveY = 795.0 + 28.0 * sin((x - 180) * 2.0 * Math.PI / 330.0)
-                    if (kotlin.math.abs(y - waveY) <= 14.0) {
+                    if (abs(y - waveY) <= 14.0) {
                         r = 14; g = 165; b = 233
                     }
                 }
