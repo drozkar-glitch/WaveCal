@@ -4,10 +4,10 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Contacts.*
 import platform.EventKit.*
 import platform.Foundation.*
-import platform.UIKit.UIDevice
 import platform.UIKit.UIPasteboard
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
+import kotlin.math.abs
 import kotlin.math.floor
 
 @OptIn(ExperimentalForeignApi::class)
@@ -37,32 +37,23 @@ actual object CalendarBridge {
     }
 
     private fun hasSystemCalendarAccess(): Boolean {
-        val status = EKEventStore.authorizationStatusForEntityType(EKEntityType.EKEntityTypeEvent)
-        return status == EKAuthorizationStatusAuthorized
+        val status = EKEventStore.authorizationStatusForEntityType(EKEntityTypeEvent)
+        return status == EKAuthorizationStatusAuthorized || status == 3L
     }
 
     private fun requestPermissionsIfNeeded() {
-        val calStatus = EKEventStore.authorizationStatusForEntityType(EKEntityType.EKEntityTypeEvent)
+        val calStatus = EKEventStore.authorizationStatusForEntityType(EKEntityTypeEvent)
         if (calStatus == EKAuthorizationStatusNotDetermined) {
-            val majorVer = UIDevice.currentDevice.systemVersion.split(".").firstOrNull()?.toIntOrNull() ?: 17
-            if (majorVer >= 17) {
-                eventStore.requestFullAccessToEventsWithCompletion { _, _ ->
-                    dispatch_async(dispatch_get_main_queue()) {
-                        permissionListener?.invoke()
-                    }
-                }
-            } else {
-                eventStore.requestAccessToEntityType(EKEntityType.EKEntityTypeEvent) { _, _ ->
-                    dispatch_async(dispatch_get_main_queue()) {
-                        permissionListener?.invoke()
-                    }
+            eventStore.requestAccessToEntityType(EKEntityTypeEvent) { _, _ ->
+                dispatch_async(dispatch_get_main_queue()) {
+                    permissionListener?.invoke()
                 }
             }
         }
 
-        val contactStatus = CNContactStore.authorizationStatusForEntityType(CNEntityType.CNEntityTypeContacts)
+        val contactStatus = CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
         if (contactStatus == CNAuthorizationStatusNotDetermined) {
-            CNContactStore().requestAccessForEntityType(CNEntityType.CNEntityTypeContacts) { _, _ ->
+            CNContactStore().requestAccessForEntityType(CNEntityTypeContacts) { _, _ ->
                 dispatch_async(dispatch_get_main_queue()) {
                     permissionListener?.invoke()
                 }
@@ -128,7 +119,7 @@ actual object CalendarBridge {
     private fun getSystemEkCalendars(): List<EKCalendar> {
         if (!hasSystemCalendarAccess()) return emptyList()
         return try {
-            eventStore.calendarsForEntityType(EKEntityType.EKEntityTypeEvent)
+            eventStore.calendarsForEntityType(EKEntityTypeEvent)
                 .mapNotNull { it as? EKCalendar }
         } catch (e: Throwable) {
             emptyList()
@@ -284,12 +275,12 @@ actual object CalendarBridge {
         val firstRule = rules.firstOrNull() as? EKRecurrenceRule ?: return null
         val interval = firstRule.interval.toInt()
         return when (firstRule.frequency) {
-            EKRecurrenceFrequency.EKRecurrenceFrequencyDaily -> "FREQ=DAILY"
-            EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly -> {
+            EKRecurrenceFrequencyDaily -> "FREQ=DAILY"
+            EKRecurrenceFrequencyWeekly -> {
                 if (interval == 2) "FREQ=WEEKLY;INTERVAL=2" else "FREQ=WEEKLY"
             }
-            EKRecurrenceFrequency.EKRecurrenceFrequencyMonthly -> "FREQ=MONTHLY"
-            EKRecurrenceFrequency.EKRecurrenceFrequencyYearly -> "FREQ=YEARLY"
+            EKRecurrenceFrequencyMonthly -> "FREQ=MONTHLY"
+            EKRecurrenceFrequencyYearly -> "FREQ=YEARLY"
             else -> null
         }
     }
@@ -298,29 +289,29 @@ actual object CalendarBridge {
         if (rrule.isNullOrEmpty()) return null
         return when {
             rrule.startsWith("FREQ=DAILY") -> EKRecurrenceRule(
-                recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyDaily,
-                interval = 1,
-                end = null
+                EKRecurrenceFrequencyDaily,
+                1L,
+                null
             )
             rrule.startsWith("FREQ=WEEKLY;INTERVAL=2") -> EKRecurrenceRule(
-                recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly,
-                interval = 2,
-                end = null
+                EKRecurrenceFrequencyWeekly,
+                2L,
+                null
             )
             rrule.startsWith("FREQ=WEEKLY") -> EKRecurrenceRule(
-                recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly,
-                interval = 1,
-                end = null
+                EKRecurrenceFrequencyWeekly,
+                1L,
+                null
             )
             rrule.startsWith("FREQ=MONTHLY") -> EKRecurrenceRule(
-                recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyMonthly,
-                interval = 1,
-                end = null
+                EKRecurrenceFrequencyMonthly,
+                1L,
+                null
             )
             rrule.startsWith("FREQ=YEARLY") -> EKRecurrenceRule(
-                recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyYearly,
-                interval = 1,
-                end = null
+                EKRecurrenceFrequencyYearly,
+                1L,
+                null
             )
             else -> null
         }
@@ -348,11 +339,7 @@ actual object CalendarBridge {
                 val startDate = NSDate.dateWithTimeIntervalSince1970(monthStartMillis / 1000.0)
                 val endDate = NSDate.dateWithTimeIntervalSince1970(monthEndMillis / 1000.0)
                 try {
-                    val predicate = eventStore.predicateForEventsWithStartDate(
-                        startDate = startDate,
-                        endDate = endDate,
-                        calendars = sysCals
-                    )
+                    val predicate = eventStore.predicateForEventsWithStartDate(startDate, endDate, sysCals)
                     val ekEvents = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
                     for (ev in ekEvents) {
                         val sMillis = ((ev.startDate?.timeIntervalSince1970 ?: continue) * 1000.0).toLong()
@@ -361,7 +348,6 @@ actual object CalendarBridge {
                             for (d in 1..maxDays) {
                                 val dStart = createMillis(year, monthZeroBased, d, 0, 0)
                                 val dEnd = createMillis(year, monthZeroBased, d, 23, 59) + 59_999L
-                                // Ochrana proti přetékání 24h svátků přes půlnoc (vyžadujeme alespoň 6 hodin překryvu v daném dni)
                                 val overlapStart = maxOf(sMillis, dStart)
                                 val overlapEnd = minOf(eMillis, dEnd)
                                 if (overlapEnd - overlapStart >= 6 * 3600_000L) {
@@ -413,11 +399,7 @@ actual object CalendarBridge {
                 val startDate = NSDate.dateWithTimeIntervalSince1970(dayStartMillis / 1000.0)
                 val endDate = NSDate.dateWithTimeIntervalSince1970(dayEndMillis / 1000.0)
                 try {
-                    val predicate = eventStore.predicateForEventsWithStartDate(
-                        startDate = startDate,
-                        endDate = endDate,
-                        calendars = sysCals
-                    )
+                    val predicate = eventStore.predicateForEventsWithStartDate(startDate, endDate, sysCals)
                     val ekEvents = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
                     for (ev in ekEvents) {
                         val sMillis = ((ev.startDate?.timeIntervalSince1970 ?: continue) * 1000.0).toLong()
@@ -486,17 +468,13 @@ actual object CalendarBridge {
         return try {
             val searchStart = NSDate.dateWithTimeIntervalSince1970((event.beginTime - 86_400_000L) / 1000.0)
             val searchEnd = NSDate.dateWithTimeIntervalSince1970((event.beginTime + 86_400_000L) / 1000.0)
-            val predicate = eventStore.predicateForEventsWithStartDate(
-                startDate = searchStart,
-                endDate = searchEnd,
-                calendars = null
-            )
+            val predicate = eventStore.predicateForEventsWithStartDate(searchStart, searchEnd, null)
             val matches = eventStore.eventsMatchingPredicate(predicate).mapNotNull { it as? EKEvent }
             matches.firstOrNull { ek ->
                 val ekId = ek.eventIdentifier ?: ""
                 val ekStart = ((ek.startDate?.timeIntervalSince1970 ?: 0.0) * 1000.0).toLong()
                 (ekId == event.platformId || stableIdFromString(ekId) == event.eventId) &&
-                    kotlin.math.abs(ekStart - event.beginTime) < 60_000L
+                    abs(ekStart - event.beginTime) < 60_000L
             } ?: eventStore.eventWithIdentifier(event.platformId)
         } catch (e: Throwable) {
             null
@@ -548,7 +526,7 @@ actual object CalendarBridge {
                         val alarm = EKAlarm.alarmWithRelativeOffset(-(alertMinutes * 60.0))
                         ekEvent.alarms = listOf(alarm)
                     } else {
-                        ekEvent.alarms = emptyList<Any>()
+                        ekEvent.alarms = null
                     }
 
                     if (existingEvent == null || editThisAndFuture) {
@@ -563,12 +541,12 @@ actual object CalendarBridge {
                     }
 
                     val span = if (existingEvent != null && !existingEvent.rrule.isNullOrEmpty() && editThisAndFuture) {
-                        EKSpan.EKSpanFutureEvents
+                        EKSpanFutureEvents
                     } else {
-                        EKSpan.EKSpanThisEvent
+                        EKSpanThisEvent
                     }
 
-                    val savedOk = eventStore.saveEvent(ekEvent, span = span, commit = true, error = null)
+                    val savedOk = eventStore.saveEvent(ekEvent, span, true, null)
                     if (savedOk) {
                         if (isExpertMode && existingEvent == null) {
                             val cur = loadSettings()
@@ -580,7 +558,6 @@ actual object CalendarBridge {
             }
         }
 
-        // Záložní lokální uložení (pokud uživatel nepovolil systémový kalendář nebo edituje lokální záznam)
         val all = loadStoredEvents()
         val nowId = (NSDate().timeIntervalSince1970 * 1000.0).toLong()
 
@@ -660,11 +637,11 @@ actual object CalendarBridge {
             if (sysEvent != null) {
                 try {
                     val span = if (!event.rrule.isNullOrEmpty() && thisAndFuture) {
-                        EKSpan.EKSpanFutureEvents
+                        EKSpanFutureEvents
                     } else {
-                        EKSpan.EKSpanThisEvent
+                        EKSpanThisEvent
                     }
-                    if (eventStore.removeEvent(sysEvent, span = span, commit = true, error = null)) {
+                    if (eventStore.removeEvent(sysEvent, span, true, null)) {
                         return true
                     }
                 } catch (e: Throwable) {}
@@ -693,7 +670,7 @@ actual object CalendarBridge {
     }
 
     actual fun contactMatchesNameDay(nameDayString: String): Boolean {
-        val status = CNContactStore.authorizationStatusForEntityType(CNEntityType.CNEntityTypeContacts)
+        val status = CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
         if (status != CNAuthorizationStatusAuthorized) return false
 
         val store = CNContactStore()
@@ -711,8 +688,8 @@ actual object CalendarBridge {
             }
             try {
                 val predicate = CNContact.predicateForContactsMatchingName(cisteJmeno)
-                val contacts = store.unifiedContactsMatchingPredicate(predicate, keysToFetch = keys, error = null)
-                if (contacts.isNotEmpty()) return true
+                val contacts = store.unifiedContactsMatchingPredicate(predicate, keys, null)
+                if (!contacts.isNullOrEmpty()) return true
             } catch (e: Throwable) {}
         }
         return false
