@@ -169,21 +169,21 @@ jobs:
               try:
                   service.edits().tracks().update(
                       editId=edit_id,
-                      track="production",
+                      track="internal",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "completed"}]}
                   ).execute(num_retries=5)
-                  print("Prirazeno do kanalu production (completed).")
+                  print("Prirazeno do kanalu internal (completed).")
                   commit_edit(edit_id)
               except Exception as track_err:
                   print(f"Aplikace je v Google Play v rezimu draft ({track_err}). Prepinam vydani na status draft...")
                   service.edits().tracks().update(
                       editId=edit_id,
-                      track="production",
+                      track="internal",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "draft"}]}
                   ).execute(num_retries=5)
-                  print("Prirazeno do kanalu production jako draft.")
+                  print("Prirazeno do kanalu internal jako draft.")
                   commit_edit(edit_id)
           except HttpError as e:
               if e.resp.status == 404:
@@ -789,4 +789,4 @@ jobs:
         with:
           name: ${{ env.APP_NAME }}-iOS-IPA
           path: build/ios/ipa/*.ipa
-# Sync: 2026-10-29T11:42:51.313Z
+# Sync: 2026-10-29T11:53:53.882Z
