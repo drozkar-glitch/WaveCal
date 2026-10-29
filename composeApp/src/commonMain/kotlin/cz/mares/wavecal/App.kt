@@ -129,7 +129,7 @@ fun App() {
                         .fillMaxSize()
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
-                    // Horní hlavička s vybraným datem, týdnem a svátkem
+                    // Horní hlavička s vybraným datem, svátkem a číslem týdne
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -178,7 +178,7 @@ fun App() {
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)
                     )
 
-                    // Seznam událostí pro vybraný den (zabírá veškerý volný prostor nahoře)
+                    // Seznam událostí pro vybraný den (zabírá volný prostor nahoře)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -210,11 +210,161 @@ fun App() {
                         }
                     }
 
-                    // Lišta pro přepínání měsíců, přidání události (+) a nastavení
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f),
+                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                    )
+
+                    // Mřížka kalendáře s pevnou výškou na 6 řádků (nic neposkakuje)
+                    val firstDayOffset = CalendarBridge.getFirstDayOfWeekOffsetMondayBased(cursorYear, cursorMonth)
+                    val maxDays = CalendarBridge.getDaysInMonth(cursorYear, cursorMonth)
+                    val cells = remember(cursorYear, cursorMonth, firstDayOffset, maxDays) {
+                        buildList {
+                            for (i in 0 until firstDayOffset) add(null)
+                            for (d in 1..maxDays) add(d)
+                            while (size % 7 != 0) add(null)
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Hlavičky dnů v týdnu (prázdný roh + Po - Ne)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(28.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Spacer(modifier = Modifier.width(26.dp))
+                            strings.shortWeekdays.forEach { dayHeader ->
+                                Box(
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = dayHeader,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDark) Color.LightGray else Color.DarkGray
+                                    )
+                                }
+                            }
+                        }
+
+                        // Vždy přesně 6 řádků týdnů pro stabilní výšku mřížky
+                        val rows = cells.chunked(7)
+                        for (rowIndex in 0 until 6) {
+                            val week = rows.getOrNull(rowIndex)
+                            if (week != null) {
+                                val firstValidDay = week.firstOrNull { it != null } ?: 1
+                                val rowWeekNum = getIsoWeekNumber(cursorYear, cursorMonth, firstValidDay)
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(40.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Číslo týdne na začátku řádku
+                                    Box(
+                                        modifier = Modifier
+                                            .width(26.dp)
+                                            .fillMaxHeight(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = rowWeekNum.toString(),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF888888)
+                                        )
+                                    }
+
+                                    week.forEach { dayNum ->
+                                        val isSelected = dayNum != null &&
+                                                dayNum == selectedDay &&
+                                                cursorMonth == selectedMonth &&
+                                                cursorYear == selectedYear
+                                        val hasEvents = dayNum != null && daysWithEvents.contains(dayNum)
+                                        val selectedBgColor = if (isDark) Color(0xFFFFD500) else Color(0xFF009B77)
+
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight()
+                                                .padding(1.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isSelected) selectedBgColor else Color.Transparent)
+                                                .then(
+                                                    if (dayNum != null) {
+                                                        Modifier.combinedClickable(
+                                                            onClick = {
+                                                                selectedYear = cursorYear
+                                                                selectedMonth = cursorMonth
+                                                                selectedDay = dayNum
+                                                            },
+                                                            onLongClick = {
+                                                                selectedYear = cursorYear
+                                                                selectedMonth = cursorMonth
+                                                                selectedDay = dayNum
+                                                                dialogInitYear = cursorYear
+                                                                dialogInitMonth = cursorMonth
+                                                                dialogInitDay = dayNum
+                                                                eventToEdit = null
+                                                                editThisAndFuture = false
+                                                                showAddEditDialog = true
+                                                            }
+                                                        )
+                                                    } else Modifier
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (dayNum != null) {
+                                                Column(
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.Center
+                                                ) {
+                                                    Text(
+                                                        text = dayNum.toString(),
+                                                        fontSize = 15.sp,
+                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                        color = if (isSelected) {
+                                                            if (isDark) Color.Black else Color.White
+                                                        } else {
+                                                            if (isDark) Color.White else Color.Black
+                                                        }
+                                                    )
+                                                    Spacer(modifier = Modifier.height(1.dp))
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                if (hasEvents) Color(0xFFFF4444) else Color.Transparent
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Prázdný 6. řádek u kratších měsíců, aby kalendář nikdy neposkočil
+                                Spacer(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(40.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Spodní ovládací lišta pevně ukotvená úplně dole
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 6.dp, bottom = 4.dp),
+                            .padding(top = 6.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
@@ -227,7 +377,7 @@ fun App() {
                                 }
                             },
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            modifier = Modifier.height(38.dp)
+                            modifier = Modifier.height(40.dp)
                         ) {
                             Text("<", fontSize = 17.sp, fontWeight = FontWeight.Bold)
                         }
@@ -284,156 +434,9 @@ fun App() {
                                 }
                             },
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            modifier = Modifier.height(38.dp)
+                            modifier = Modifier.height(40.dp)
                         ) {
                             Text(">", fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    // Mřížka kalendáře ukotvená kompaktně dole (bez weight, aby nevytlačovala agendu)
-                    val firstDayOffset = CalendarBridge.getFirstDayOfWeekOffsetMondayBased(cursorYear, cursorMonth)
-                    val maxDays = CalendarBridge.getDaysInMonth(cursorYear, cursorMonth)
-                    val cells = remember(cursorYear, cursorMonth, firstDayOffset, maxDays) {
-                        buildList {
-                            for (i in 0 until firstDayOffset) add(null)
-                            for (d in 1..maxDays) add(d)
-                            while (size % 7 != 0) add(null)
-                        }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 2.dp)
-                    ) {
-                        // Hlavičky: sloupec týdne + dny v týdnu (Po - Ne)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(28.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier.width(26.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = formatWeekColumnHeader(langCode),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isDark) Color.Gray else Color(0xFF757575)
-                                )
-                            }
-                            strings.shortWeekdays.forEach { dayHeader ->
-                                Box(
-                                    modifier = Modifier.weight(1f),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = dayHeader,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDark) Color.LightGray else Color.DarkGray
-                                    )
-                                }
-                            }
-                        }
-
-                        // Jednotlivé týdny v měsíci
-                        val rows = cells.chunked(7)
-                        rows.forEach { week ->
-                            val firstValidDay = week.firstOrNull { it != null } ?: 1
-                            val rowWeekNum = getIsoWeekNumber(cursorYear, cursorMonth, firstValidDay)
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(40.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Číslo týdne na začátku řádku
-                                Box(
-                                    modifier = Modifier
-                                        .width(26.dp)
-                                        .fillMaxHeight(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = rowWeekNum.toString(),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = if (isDark) Color(0xFF888888) else Color(0xFF888888)
-                                    )
-                                }
-
-                                week.forEach { dayNum ->
-                                    val isSelected = dayNum != null &&
-                                            dayNum == selectedDay &&
-                                            cursorMonth == selectedMonth &&
-                                            cursorYear == selectedYear
-                                    val hasEvents = dayNum != null && daysWithEvents.contains(dayNum)
-                                    val selectedBgColor = if (isDark) Color(0xFFFFD500) else Color(0xFF009B77)
-
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .padding(1.dp)
-                                            .clip(CircleShape)
-                                            .background(if (isSelected) selectedBgColor else Color.Transparent)
-                                            .then(
-                                                if (dayNum != null) {
-                                                    Modifier.combinedClickable(
-                                                        onClick = {
-                                                            selectedYear = cursorYear
-                                                            selectedMonth = cursorMonth
-                                                            selectedDay = dayNum
-                                                        },
-                                                        onLongClick = {
-                                                            selectedYear = cursorYear
-                                                            selectedMonth = cursorMonth
-                                                            selectedDay = dayNum
-                                                            dialogInitYear = cursorYear
-                                                            dialogInitMonth = cursorMonth
-                                                            dialogInitDay = dayNum
-                                                            eventToEdit = null
-                                                            editThisAndFuture = false
-                                                            showAddEditDialog = true
-                                                        }
-                                                    )
-                                                } else Modifier
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (dayNum != null) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.Center
-                                            ) {
-                                                Text(
-                                                    text = dayNum.toString(),
-                                                    fontSize = 15.sp,
-                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                    color = if (isSelected) {
-                                                        if (isDark) Color.Black else Color.White
-                                                    } else {
-                                                        if (isDark) Color.White else Color.Black
-                                                    }
-                                                )
-                                                Spacer(modifier = Modifier.height(1.dp))
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(5.dp)
-                                                        .clip(CircleShape)
-                                                        .background(
-                                                            if (hasEvents) Color(0xFFFF4444) else Color.Transparent
-                                                        )
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -443,7 +446,7 @@ fun App() {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 24.dp),
+                            .padding(bottom = 64.dp),
                         shape = RoundedCornerShape(24.dp),
                         color = if (isDark) Color(0xFF383838) else Color(0xFF222222),
                         tonalElevation = 6.dp
@@ -772,15 +775,6 @@ private fun getIsoWeekNumber(year: Int, monthZeroBased: Int, day: Int): Int {
     return (dayOfYearZeroBased / 7) + 1
 }
 
-private fun formatWeekColumnHeader(langCode: String): String {
-    return when (langCode.lowercase().take(2)) {
-        "cs", "sk" -> "Tý"
-        "pl" -> "Ty"
-        "de" -> "KW"
-        else -> "Wk"
-    }
-}
-
 private fun formatWeekLabel(langCode: String, weekNum: Int): String {
     val isEven = (weekNum % 2 == 0)
     return when (langCode.lowercase().take(2)) {
@@ -797,7 +791,7 @@ private fun formatWeekLabel(langCode: String, weekNum: Int): String {
 private fun WheelPicker(
     items: List<String>,
     selectedIndex: Int,
-    onSelectedIndexChanged: ( oldIndex: Int, newIndex: Int ) -> Unit,
+    onSelectedIndexChanged: (oldIndex: Int, newIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
     wrapSelectorWheel: Boolean = true,
     itemHeight: Dp = 42.dp
