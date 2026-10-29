@@ -9,7 +9,7 @@ env:
   APP_NAME: "WaveCal"
   BUNDLE_ID: "cz.mares.wavecal"
   APP_VERSION: "1.0"
-  PUBLISH_TO_STORES: "false"
+  PUBLISH_TO_STORES: "true"
   BUILD_IOS: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
