@@ -9,7 +9,7 @@ env:
   APP_NAME: "WaveCal"
   BUNDLE_ID: "cz.mares.wavecal"
   APP_VERSION: "1.0"
-  PUBLISH_TO_STORES: "true"
+  PUBLISH_TO_STORES: "false"
   BUILD_IOS: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -150,6 +150,22 @@ jobs:
               version_code = bundle_response["versionCode"]
               print(f"AAB uspesne nahrano (versionCode: {version_code}).")
 
+              def commit_edit(eid):
+                  try:
+                      service.edits().commit(editId=eid, packageName=package_name).execute(num_retries=5)
+                      print("Publikace do Google Play uspesne dokoncena!")
+                  except Exception as cerr:
+                      err_str = str(cerr)
+                      if "Only releases with status draft" in err_str:
+                          raise cerr
+                      print(f"Standardni commit vyzaduje rucni potvrzeni v konzoli ({cerr}), ukladam s changesNotSentForReview=True...")
+                      service.edits().commit(
+                          editId=eid,
+                          packageName=package_name,
+                          changesNotSentForReview=True
+                      ).execute(num_retries=5)
+                      print("Publikace ulozena do Google Play (changesNotSentForReview=True)! Staci ji potvrdit v Prehledu publikovani.")
+
               try:
                   service.edits().tracks().update(
                       editId=edit_id,
@@ -158,8 +174,9 @@ jobs:
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "completed"}]}
                   ).execute(num_retries=5)
                   print("Prirazeno do kanalu production (completed).")
+                  commit_edit(edit_id)
               except Exception as track_err:
-                  print(f"Upozorneni (pravdepodobne draft aplikace): {track_err}. Ukladam jako draft...")
+                  print(f"Aplikace je v Google Play v rezimu draft ({track_err}). Prepinam vydani na status draft...")
                   service.edits().tracks().update(
                       editId=edit_id,
                       track="production",
@@ -167,18 +184,7 @@ jobs:
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "draft"}]}
                   ).execute(num_retries=5)
                   print("Prirazeno do kanalu production jako draft.")
-
-              try:
-                  service.edits().commit(editId=edit_id, packageName=package_name).execute(num_retries=5)
-                  print("Publikace do Google Play uspesne dokoncena!")
-              except Exception as commit_err:
-                  print(f"Standardni commit vyzaduje rucni potvrzeni v konzoli ({commit_err}), ukladam s changesNotSentForReview=True...")
-                  service.edits().commit(
-                      editId=edit_id,
-                      packageName=package_name,
-                      changesNotSentForReview=True
-                  ).execute(num_retries=5)
-                  print("Publikace ulozena do Google Play (changesNotSentForReview=True)! Staci ji potvrdit v Prehledu publikovani.")
+                  commit_edit(edit_id)
           except HttpError as e:
               if e.resp.status == 404:
                   print(f"UPOZORNENI: Balicek '{package_name}' zatim v Google Play Console neexistuje (404 Package not found).")
@@ -467,14 +473,77 @@ jobs:
             -exportOptionsPlist "$HOME/export_options.plist"
 
           if [ "$PUBLISH_TO_STORES" = "true" ]; then
-            echo "Nahravam .ipa do Apple App Store Connect (TestFlight)..."
-            app-store-connect publish \
-              --path build/ios/ipa/*.ipa \
-              --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-              --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-              --private-key "@file:/tmp/AuthKey.p8"
+            MAX_PUB_ATTEMPTS=5
+            PUB_ATTEMPT=1
+            while [ $PUB_ATTEMPT -le $MAX_PUB_ATTEMPTS ]; do
+              echo "Pokus $PUB_ATTEMPT/$MAX_PUB_ATTEMPTS: Nahravam .ipa (verze $APP_VERSION) do Apple App Store Connect (TestFlight)..."
+              set +e
+              app-store-connect publish \
+                --path build/ios/ipa/*.ipa \
+                --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+                --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+                --private-key "@file:/tmp/AuthKey.p8" 2>&1 | tee /tmp/asc_publish.log
+              PUB_EXIT=${PIPESTATUS[0]}
+              set -e
 
-            echo "Kontroluji stav v App Store Connect (uklid prazdnych Draft Submissions a kontrola Waiting for Review)..."
+              if [ $PUB_EXIT -eq 0 ]; then
+                echo "Upload .ipa (verze $APP_VERSION) uspesne dokoncen!"
+                break
+              fi
+
+              if grep -qE "90062|90186|closed for new build submissions|must contain a higher version" /tmp/asc_publish.log; then
+                if [ $PUB_ATTEMPT -eq $MAX_PUB_ATTEMPTS ]; then
+                  echo "Nepodarilo se najit volnou verzi ani po $MAX_PUB_ATTEMPTS pokusech."
+                  exit 1
+                fi
+                NEW_VER=$(python3 - << 'PYEOF'
+          import re, os
+          log_txt = open("/tmp/asc_publish.log", "r", errors="ignore").read()
+          cur = os.environ.get("APP_VERSION", "1.0").strip()
+          matches = re.findall(r"previously approved version \[([0-9.]+)\]|train version '([0-9.]+)'", log_txt)
+          base = cur
+          for g1, g2 in matches:
+              v = g1 or g2
+              if v:
+                  base = v
+          def parse_v(s):
+              parts = [int(x) for x in s.split(".") if x.isdigit()]
+              while len(parts) < 2:
+                  parts.append(0)
+              return parts
+          p_cur = parse_v(cur)
+          p_base = parse_v(base)
+          target = list(p_base if p_base >= p_cur else p_cur)
+          target[-1] += 1
+          print(".".join(str(x) for x in target))
+          PYEOF
+                )
+                NEW_VER=$(echo "$NEW_VER" | tr -d '\r\n ')
+                echo "Verze $APP_VERSION je v App Store uzavrena (90062/90186). Automaticky zvysuji verzi na $NEW_VER a prebaluji .ipa..."
+                export APP_VERSION="$NEW_VER"
+                echo "APP_VERSION=$NEW_VER" >> $GITHUB_ENV
+
+                plutil -replace ApplicationProperties.CFBundleShortVersionString -string "$NEW_VER" build/ios/xcarchive/iosApp.xcarchive/Info.plist || true
+                for app_plist in build/ios/xcarchive/iosApp.xcarchive/Products/Applications/*.app/Info.plist; do
+                  if [ -f "$app_plist" ]; then
+                    plutil -replace CFBundleShortVersionString -string "$NEW_VER" "$app_plist" || true
+                  fi
+                done
+
+                rm -rf build/ios/ipa/*.ipa
+                xcodebuild -exportArchive \
+                  -archivePath build/ios/xcarchive/iosApp.xcarchive \
+                  -exportPath build/ios/ipa \
+                  -exportOptionsPlist "$HOME/export_options.plist"
+
+                PUB_ATTEMPT=$((PUB_ATTEMPT + 1))
+              else
+                echo "Chyba pri nahravani .ipa do App Store Connect (kod $PUB_EXIT)."
+                exit $PUB_EXIT
+              fi
+            done
+
+            echo "Kontroluji stav v App Store Connect (uklid prazdnych Draft Submissions a prirazeni buildu)..."
             pip3 install --quiet --break-system-packages pyjwt cryptography requests || \
             pip3 install --quiet pyjwt cryptography requests
 
@@ -485,6 +554,7 @@ jobs:
           issuer_id = os.environ.get("APP_STORE_CONNECT_ISSUER_ID", "").strip()
           bundle_id = os.environ.get("BUNDLE_ID", "").strip()
           build_num = os.environ.get("PROJECT_BUILD_NUMBER", "101").strip()
+          app_version = os.environ.get("APP_VERSION", "1.0").strip()
           key_path = "/tmp/AuthKey.p8"
 
           if not key_id or not issuer_id or not os.path.exists(key_path):
@@ -563,6 +633,35 @@ jobs:
               state = attrs.get("appStoreState") or attrs.get("appVersionState") or ""
               ver_str = attrs.get("versionString", "1.0")
               print(f"Nalezena iOS verze {ver_str} (ID: {version_id}) ve stavu: {state}")
+
+              if state == "READY_FOR_SALE" and ver_str != app_version:
+                  print(f"Verze {ver_str} uz je v prodeji (READY_FOR_SALE). Zakladam v App Store Connect novou verzi {app_version}...")
+                  create_ver_body = {
+                      "data": {
+                          "type": "appStoreVersions",
+                          "attributes": {
+                              "platform": "IOS",
+                              "versionString": app_version
+                          },
+                          "relationships": {
+                              "app": {
+                                  "data": {
+                                      "type": "apps",
+                                      "id": app_id
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  cv_res = requests.post(f"{base_url}/appStoreVersions", json=create_ver_body, headers=get_headers(), timeout=30)
+                  if cv_res.ok:
+                      target_version = cv_res.json()["data"]
+                      version_id = target_version["id"]
+                      state = "PREPARE_FOR_SUBMISSION"
+                      ver_str = app_version
+                      print(f"Nova verze {ver_str} uspesne zalozena (ID: {version_id}).")
+                  else:
+                      print(f"Upozorneni pri zakladani verze {app_version}: {cv_res.status_code} {cv_res.text}")
 
               waiting_states = {
                   "WAITING_FOR_REVIEW",
@@ -690,4 +789,3 @@ jobs:
         with:
           name: ${{ env.APP_NAME }}-iOS-IPA
           path: build/ios/ipa/*.ipa
-# Sync: 2026-10-28T20:03:54.294Z

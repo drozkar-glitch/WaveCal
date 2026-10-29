@@ -82,7 +82,12 @@ android {
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             val keystorePath = System.getenv("CM_KEYSTORE_PATH")
             if (!keystorePath.isNullOrBlank()) {
                 signingConfig = signingConfigs.getByName("release")
@@ -107,10 +112,11 @@ val generateIosAppIcon by tasks.registering {
         val iconDir = rootProject.file("iosApp/iosApp/Assets.xcassets/AppIcon.appiconset")
         iconDir.mkdirs()
         val outFile = File(iconDir, "app-icon-1024.png")
+
         val width = 1024
         val height = 1024
-
         val rawBytes = ByteArrayOutputStream(height * (1 + width * 3))
+
         for (y in 0 until height) {
             rawBytes.write(0)
             for (x in 0 until width) {
