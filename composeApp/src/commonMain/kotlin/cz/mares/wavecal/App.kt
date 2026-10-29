@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -360,11 +359,12 @@ fun App() {
                         }
                     }
 
-                    // Spodní ovládací lišta pevně ukotvená úplně dole
+                    // Spodní ovládací lišta pevně ukotvená úplně dole (vždy 1 řádek)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 6.dp, bottom = 2.dp),
+                            .height(48.dp)
+                            .padding(top = 4.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
@@ -376,8 +376,8 @@ fun App() {
                                     cursorMonth--
                                 }
                             },
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            modifier = Modifier.height(40.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 38.dp)
                         ) {
                             Text("<", fontSize = 17.sp, fontWeight = FontWeight.Bold)
                         }
@@ -385,33 +385,18 @@ fun App() {
                         val monthTitle = "${strings.monthNames.getOrElse(cursorMonth) { "" }} $cursorYear"
                         Text(
                             text = monthTitle,
-                            fontSize = 19.sp,
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable { showMonthYearDialog = true }
-                                .padding(vertical = 6.dp)
+                                .padding(horizontal = 4.dp, vertical = 6.dp)
                         )
-
-                        IconButton(
-                            onClick = {
-                                dialogInitYear = selectedYear
-                                dialogInitMonth = selectedMonth
-                                dialogInitDay = selectedDay
-                                eventToEdit = null
-                                editThisAndFuture = false
-                                showAddEditDialog = true
-                            },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "+",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
 
                         IconButton(
                             onClick = { showMenuDialog = true },
@@ -433,8 +418,8 @@ fun App() {
                                     cursorMonth++
                                 }
                             },
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            modifier = Modifier.height(40.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 38.dp)
                         ) {
                             Text(">", fontSize = 17.sp, fontWeight = FontWeight.Bold)
                         }
