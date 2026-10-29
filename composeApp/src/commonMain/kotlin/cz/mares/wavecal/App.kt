@@ -235,7 +235,7 @@ fun App() {
                                 .height(28.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Spacer(modifier = Modifier.width(26.dp))
+                            Spacer(modifier = Modifier.width(30.dp))
                             strings.shortWeekdays.forEach { dayHeader ->
                                 Box(
                                     modifier = Modifier.weight(1f),
@@ -265,19 +265,27 @@ fun App() {
                                         .height(40.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // Číslo týdne na začátku řádku
+                                    // Číslo týdne na začátku řádku (stejný vzhled jako Po-Ne a srovnaná výška se dny)
                                     Box(
                                         modifier = Modifier
-                                            .width(26.dp)
-                                            .fillMaxHeight(),
+                                            .width(30.dp)
+                                            .fillMaxHeight()
+                                            .padding(1.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = rowWeekNum.toString(),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = Color(0xFF888888)
-                                        )
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center
+                                        ) {
+                                            Text(
+                                                text = rowWeekNum.toString(),
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDark) Color.LightGray else Color.DarkGray
+                                            )
+                                            Spacer(modifier = Modifier.height(1.dp))
+                                            Spacer(modifier = Modifier.size(5.dp))
+                                        }
                                     }
 
                                     week.forEach { dayNum ->
