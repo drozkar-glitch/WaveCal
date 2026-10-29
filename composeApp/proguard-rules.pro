@@ -1,7 +1,4 @@
--keep class cz.mares.wavecal.MainActivity { *; }
--keep class cz.mares.wavecal.AgendaWidget { *; }
--keep class cz.mares.wavecal.AlarmReceiver { *; }
--keep class cz.mares.wavecal.CalendarSyncReceiver { *; }
+-keep class cz.mares.wavecal.** { *; }
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }

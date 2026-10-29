@@ -1,14 +1,11 @@
 package cz.mares.wavecal
 
 import android.Manifest
-import android.appwidget.AppWidgetManager
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.ComponentName
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -28,7 +25,7 @@ actual object CalendarBridge {
 
     fun notifyPermissionsResult() {
         permissionListener?.invoke()
-        aktualizujWidgety()
+        aktualizujWidgetyABudiky()
     }
 
     actual fun setPermissionResultListener(listener: () -> Unit) {
@@ -68,39 +65,58 @@ actual object CalendarBridge {
             editor.putStringSet("zobrazene_kalendare", settings.visibleCalendarIds)
         }
         editor.apply()
-        aktualizujWidgety()
+        aktualizujWidgetyABudiky()
     }
 
     private fun ziskejPovoleneKalendare(ctx: Context): String? {
         val prefs = ctx.getSharedPreferences("KalendPrefs", Context.MODE_PRIVATE)
         val ulozeneId = prefs.getStringSet("zobrazene_kalendare", null)
         return if (ulozeneId != null && ulozeneId.isNotEmpty()) {
-            "${CalendarContract.Instances.CALENDAR_ID} IN (${ulozeneId.joinToString(",")})"
+            val safeIds = ulozeneId.mapNotNull { it.toLongOrNull() }
+            if (safeIds.isNotEmpty()) {
+                "${CalendarContract.Instances.CALENDAR_ID} IN (${safeIds.joinToString(",")})"
+            } else null
         } else null
     }
 
-    private fun aktualizujWidgety() {
+    private fun aktualizujWidgetyABudiky() {
         val ctx = AndroidContextHolder.appContext ?: return
-        val appWidgetManager = AppWidgetManager.getInstance(ctx)
-        val componentName = ComponentName(ctx, AgendaWidget::class.java)
-        val ids = appWidgetManager.getAppWidgetIds(componentName)
-        val intent = Intent(ctx, AgendaWidget::class.java).apply {
-            action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
-        }
-        ctx.sendBroadcast(intent)
+        // 1. Okamžitý přímý přepis widgetu + broadcast
+        AgendaWidget.refreshAllWidgets(ctx)
+
+        // 2. Tiché přeplánování budíků na pozadí
+        Thread {
+            try {
+                AlarmsManager.naplanujBudikyNaPozadi(ctx)
+            } catch (e: Exception) {
+                // Tichá pojistka
+            }
+        }.start()
     }
 
-    actual fun getAvailableCalendars(): List<MujKalendar> {
-        val ctx = AndroidContextHolder.appContext ?: return emptyList()
+    private data class RawCalInfo(
+        val cal: MujKalendar,
+        val isWritable: Boolean,
+        val isPrimary: Boolean,
+        val isGoogleAccount: Boolean
+    )
+
+    private fun queryCalendarsInternal(ctx: Context): List<RawCalInfo> {
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
             return emptyList()
         }
-        val list = mutableListOf<MujKalendar>()
+        val list = mutableListOf<RawCalInfo>()
         try {
+            val proj = arrayOf(
+                CalendarContract.Calendars._ID,
+                CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+                CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+                CalendarContract.Calendars.IS_PRIMARY,
+                CalendarContract.Calendars.ACCOUNT_TYPE
+            )
             ctx.contentResolver.query(
                 CalendarContract.Calendars.CONTENT_URI,
-                arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME),
+                proj,
                 null,
                 null,
                 null
@@ -108,13 +124,36 @@ actual object CalendarBridge {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(0)
                     val name = cursor.getString(1) ?: "Kalendář $id"
-                    list.add(MujKalendar(id, name))
+                    val access = if (!cursor.isNull(2)) cursor.getInt(2) else 0
+                    val primary = if (!cursor.isNull(3)) cursor.getInt(3) == 1 else false
+                    val accountType = cursor.getString(4) ?: ""
+                    val writable = access >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR
+                    val isGoogle = accountType.contains("com.google", ignoreCase = true)
+                    list.add(
+                        RawCalInfo(
+                            cal = MujKalendar(id, name),
+                            isWritable = writable,
+                            isPrimary = primary,
+                            isGoogleAccount = isGoogle
+                        )
+                    )
                 }
             }
         } catch (e: Exception) {
             // Tichá pojistka
         }
-        return list
+        // Řazení: Zapisovatelné primární Google/Samsung účty vždy nahoře, read-only svátky dole
+        return list.sortedWith(
+            compareByDescending<RawCalInfo> { it.isWritable }
+                .thenByDescending { it.isPrimary }
+                .thenByDescending { it.isGoogleAccount }
+                .thenBy { it.cal.id }
+        )
+    }
+
+    actual fun getAvailableCalendars(): List<MujKalendar> {
+        val ctx = AndroidContextHolder.appContext ?: return emptyList()
+        return queryCalendarsInternal(ctx).map { it.cal }
     }
 
     actual fun getDaysWithEvents(year: Int, monthZeroBased: Int): Set<Int> {
@@ -161,7 +200,6 @@ actual object CalendarBridge {
             )?.use { cursor ->
                 val eventLocalCal = Calendar.getInstance()
                 val eventUtcCal = Calendar.getInstance(utcZone)
-
                 while (cursor.moveToNext()) {
                     val begin = cursor.getLong(0)
                     val end = cursor.getLong(1)
@@ -207,7 +245,6 @@ actual object CalendarBridge {
             set(year, monthZeroBased, day, 0, 0, 0)
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
-
         val localEndOfDay = Calendar.getInstance().apply {
             set(year, monthZeroBased, day, 23, 59, 59)
             set(Calendar.MILLISECOND, 999)
@@ -218,7 +255,6 @@ actual object CalendarBridge {
             set(year, monthZeroBased, day, 0, 0, 0)
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
-
         val utcEndOfDay = Calendar.getInstance(utcZone).apply {
             set(year, monthZeroBased, day, 23, 59, 59)
             set(Calendar.MILLISECOND, 999)
@@ -258,8 +294,6 @@ actual object CalendarBridge {
                     val isAllDay = cursor.getInt(6) == 1
                     val end = cursor.getLong(7)
 
-                    // Celodenní události (svátky) jsou v Androidu uložené v UTC od 00:00 do 00:00 dalšího dne.
-                    // Porovnáním proti UTC hranicím dne zajistíme, že svátek končící o půlnoci 00:00 UTC nepřeteče do zítřka.
                     val belongsToSelectedDay = if (isAllDay) {
                         begin <= utcEndOfDay && end > utcStartOfDay
                     } else {
@@ -308,6 +342,15 @@ actual object CalendarBridge {
             return false
         }
 
+        // Pojistka: Pokud by vybraný kalendář byl read-only (např. Svátky), automaticky použijeme první zapisovatelný kalendář
+        val allRaw = queryCalendarsInternal(ctx)
+        val chosenRaw = allRaw.find { it.cal.id == calendar.id }
+        val targetCalendarId = if (chosenRaw != null && chosenRaw.isWritable) {
+            chosenRaw.cal.id
+        } else {
+            allRaw.firstOrNull { it.isWritable }?.cal?.id ?: calendar.id
+        }
+
         val calStart = Calendar.getInstance().apply {
             set(year, monthZeroBased, day, hour, minute, 0)
             set(Calendar.MILLISECOND, 0)
@@ -317,13 +360,11 @@ actual object CalendarBridge {
             put(CalendarContract.Events.DTSTART, calStart.timeInMillis)
             put(CalendarContract.Events.DTEND, calStart.timeInMillis + (durationMinutes * 60 * 1000L))
             put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.CALENDAR_ID, calendar.id)
+            put(CalendarContract.Events.CALENDAR_ID, targetCalendarId)
             put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-
             if (alertMinutes != -1) {
                 put(CalendarContract.Events.HAS_ALARM, 1)
             }
-
             if (existingEvent == null || editThisAndFuture) {
                 if (rrule != null) put(CalendarContract.Events.RRULE, rrule) else putNull(CalendarContract.Events.RRULE)
             }
@@ -358,14 +399,12 @@ actual object CalendarBridge {
         return try {
             if (existingEvent == null) {
                 val uri = ctx.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
-                val newEventId = uri?.lastPathSegment?.toLongOrNull()
-                if (newEventId != null) {
-                    zariditNotifikace(newEventId)
-                }
+                val newEventId = uri?.lastPathSegment?.toLongOrNull() ?: return false
+                zariditNotifikace(newEventId)
                 if (isExpertMode) {
                     ctx.getSharedPreferences("KalendPrefs", Context.MODE_PRIVATE)
                         .edit()
-                        .putLong("posledni_kalendar_id", calendar.id)
+                        .putLong("posledni_kalendar_id", targetCalendarId)
                         .apply()
                 }
             } else {
@@ -405,7 +444,7 @@ actual object CalendarBridge {
                     }
                 }
             }
-            aktualizujWidgety()
+            aktualizujWidgetyABudiky()
             true
         } catch (e: Exception) {
             false
@@ -444,7 +483,7 @@ actual object CalendarBridge {
                     ctx.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
                 }
             }
-            aktualizujWidgety()
+            aktualizujWidgetyABudiky()
             true
         } catch (e: Exception) {
             false

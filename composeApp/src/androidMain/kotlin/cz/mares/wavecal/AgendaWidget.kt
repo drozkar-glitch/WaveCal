@@ -23,7 +23,38 @@ import java.util.TimeZone
 
 class AgendaWidget : AppWidgetProvider() {
 
+    companion object {
+        fun refreshAllWidgets(context: Context) {
+            try {
+                val appContext = context.applicationContext
+                val appWidgetManager = AppWidgetManager.getInstance(appContext)
+                val componentName = ComponentName(appContext, AgendaWidget::class.java)
+                val ids = appWidgetManager.getAppWidgetIds(componentName)
+                if (ids != null && ids.isNotEmpty()) {
+                    AgendaWidget().onUpdate(appContext, appWidgetManager, ids)
+                    val intent = Intent(appContext, AgendaWidget::class.java).apply {
+                        action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
+                    }
+                    appContext.sendBroadcast(intent)
+                }
+            } catch (e: Exception) {
+                // Tichá pojistka
+            }
+        }
+    }
+
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+        val clickIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            clickIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         for (appWidgetId in appWidgetIds) {
             val views = RemoteViews(context.packageName, R.layout.agenda_widget)
 
@@ -47,19 +78,15 @@ class AgendaWidget : AppWidgetProvider() {
             }
 
             views.removeAllViews(R.id.widget_list)
-            nactiAVykresliUdalosti(context, views)
+            nactiAVykresliUdalosti(context, views, pendingIntent)
 
-            val clickIntent = Intent(context, MainActivity::class.java)
-            val pendingIntent = PendingIntent.getActivity(
-                context, 0, clickIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
             views.setOnClickPendingIntent(R.id.widget_list, pendingIntent)
             views.setOnClickPendingIntent(R.id.widget_name_day, pendingIntent)
 
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
 
+        // Půlnoční budík na 00:00:01 pro překreslení svátku a dnešních událostí
         try {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val updateIntent = Intent(context, AgendaWidget::class.java).apply {
@@ -67,7 +94,10 @@ class AgendaWidget : AppWidgetProvider() {
                 putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, appWidgetIds)
             }
             val pi = PendingIntent.getBroadcast(
-                context, 777777, updateIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                context,
+                777777,
+                updateIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
             val nextMidnight = Calendar.getInstance().apply {
@@ -78,7 +108,11 @@ class AgendaWidget : AppWidgetProvider() {
                 set(Calendar.MILLISECOND, 0)
             }.timeInMillis
 
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextMidnight, pi)
+            try {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextMidnight, pi)
+            } catch (se: SecurityException) {
+                am.set(AlarmManager.RTC_WAKEUP, nextMidnight, pi)
+            }
         } catch (e: Exception) {
             // Tichá pojistka
         }
@@ -86,7 +120,11 @@ class AgendaWidget : AppWidgetProvider() {
         super.onUpdate(context, appWidgetManager, appWidgetIds)
     }
 
-    private fun nactiAVykresliUdalosti(context: Context, views: RemoteViews) {
+    private fun nactiAVykresliUdalosti(
+        context: Context,
+        views: RemoteViews,
+        pendingIntent: PendingIntent
+    ) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
             return
         }
@@ -119,26 +157,32 @@ class AgendaWidget : AppWidgetProvider() {
         val prefs = context.getSharedPreferences("KalendPrefs", Context.MODE_PRIVATE)
         val ulozeneId = prefs.getStringSet("zobrazene_kalendare", null)
         val filtr = if (ulozeneId != null && ulozeneId.isNotEmpty()) {
-            "${CalendarContract.Instances.CALENDAR_ID} IN (${ulozeneId.joinToString(",")})"
+            val safeIds = ulozeneId.mapNotNull { it.toLongOrNull() }
+            if (safeIds.isNotEmpty()) {
+                "${CalendarContract.Instances.CALENDAR_ID} IN (${safeIds.joinToString(",")})"
+            } else null
         } else null
 
-        val cursor: Cursor? = context.contentResolver.query(
-            builder.build(), proj, filtr, null, "${CalendarContract.Instances.BEGIN} ASC"
-        )
+        val cursor: Cursor? = try {
+            context.contentResolver.query(
+                builder.build(),
+                proj,
+                filtr,
+                null,
+                "${CalendarContract.Instances.BEGIN} ASC"
+            )
+        } catch (e: Exception) {
+            null
+        }
 
         val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
         val dateFormatter = SimpleDateFormat("d.M.", Locale.getDefault())
         val dateFormatterUtc = SimpleDateFormat("d.M.", Locale.getDefault()).apply {
             timeZone = utcZone
         }
+
         var nejblizsiKonec = Long.MAX_VALUE
         var pocetNactenych = 0
-
-        val clickIntent = Intent(context, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            context, 0, clickIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
 
         cursor?.use {
             while (it.moveToNext()) {
@@ -149,7 +193,7 @@ class AgendaWidget : AppWidgetProvider() {
                 val isAllDay = it.getInt(2) == 1
                 val end = it.getLong(3)
 
-                // Vynechání již skončených celodenních událostí (např. včerejšího svátku po půlnoci) i skončených běžných událostí
+                // Vynechání skončených celodenních událostí (např. včerejšího svátku po půlnoci) i skončených běžných událostí
                 if (isAllDay) {
                     if (end <= dnesUtcStart) continue
                 } else {
@@ -182,21 +226,29 @@ class AgendaWidget : AppWidgetProvider() {
             }
         }
 
+        // Domino efekt: 1 sekundu po skončení nejbližší události se widget sám překreslí a skončenou událost schová
         if (nejblizsiKonec != Long.MAX_VALUE) {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val thisWidget = ComponentName(context, AgendaWidget::class.java)
-            val allWidgetIds = AppWidgetManager.getInstance(context).getAppWidgetIds(thisWidget)
-
-            val intent = Intent(context, AgendaWidget::class.java).apply {
-                action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-                putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, allWidgetIds)
-            }
-
-            val pi = PendingIntent.getBroadcast(
-                context, 999999, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
             try {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nejblizsiKonec, pi)
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                val thisWidget = ComponentName(context, AgendaWidget::class.java)
+                val allWidgetIds = AppWidgetManager.getInstance(context).getAppWidgetIds(thisWidget)
+
+                val intent = Intent(context, AgendaWidget::class.java).apply {
+                    action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, allWidgetIds)
+                }
+                val pi = PendingIntent.getBroadcast(
+                    context,
+                    999999,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val triggerAt = nejblizsiKonec + 1000L
+                try {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                } catch (se: SecurityException) {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                }
             } catch (e: Exception) {
                 // Tichá pojistka
             }
