@@ -169,21 +169,21 @@ jobs:
               try:
                   service.edits().tracks().update(
                       editId=edit_id,
-                      track="internal",
+                      track="production",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "completed"}]}
                   ).execute(num_retries=5)
-                  print("Prirazeno do kanalu internal (completed).")
+                  print("Prirazeno do kanalu production (completed).")
                   commit_edit(edit_id)
               except Exception as track_err:
                   print(f"Aplikace je v Google Play v rezimu draft ({track_err}). Prepinam vydani na status draft...")
                   service.edits().tracks().update(
                       editId=edit_id,
-                      track="internal",
+                      track="production",
                       packageName=package_name,
                       body={"releases": [{"versionCodes": [str(version_code)], "status": "draft"}]}
                   ).execute(num_retries=5)
-                  print("Prirazeno do kanalu internal jako draft.")
+                  print("Prirazeno do kanalu production jako draft.")
                   commit_edit(edit_id)
           except HttpError as e:
               if e.resp.status == 404:

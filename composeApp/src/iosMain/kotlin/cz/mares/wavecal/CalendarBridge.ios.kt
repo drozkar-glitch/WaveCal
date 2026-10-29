@@ -39,13 +39,13 @@ actual object CalendarBridge {
         if (permissionsRequested) return
         permissionsRequested = true
 
-        eventStore.requestAccessToEntityType(EKEntityTypeEvent) { _, _ ->
+        eventStore.requestAccessToEntityType(EKEntityType.EKEntityTypeEvent) { _, _ ->
             dispatch_async(dispatch_get_main_queue()) {
                 permissionListener?.invoke()
             }
         }
 
-        contactStore.requestAccessForEntityType(CNEntityTypeContacts) { _, _ ->
+        contactStore.requestAccessForEntityType(CNEntityType.CNEntityTypeContacts) { _, _ ->
             dispatch_async(dispatch_get_main_queue()) {
                 permissionListener?.invoke()
             }
@@ -53,13 +53,13 @@ actual object CalendarBridge {
     }
 
     private fun hasCalendarAccess(): Boolean {
-        val status = EKEventStore.authorizationStatusForEntityType(EKEntityTypeEvent)
+        val status = EKEventStore.authorizationStatusForEntityType(EKEntityType.EKEntityTypeEvent)
         // 3 = Authorized, 4 = FullAccess (iOS 17+)
         return status == EKAuthorizationStatusAuthorized || status >= 3L
     }
 
     private fun hasContactsAccess(): Boolean {
-        val status = CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
+        val status = CNContactStore.authorizationStatusForEntityType(CNEntityType.CNEntityTypeContacts)
         return status == CNAuthorizationStatusAuthorized
     }
 
@@ -123,7 +123,7 @@ actual object CalendarBridge {
 
     private fun getSystemEkCalendars(): List<EKCalendar> {
         if (!hasCalendarAccess()) return emptyList()
-        val rawList = eventStore.calendarsForEntityType(EKEntityTypeEvent)
+        val rawList = eventStore.calendarsForEntityType(EKEntityType.EKEntityTypeEvent)
         val ekList = rawList.mapNotNull { it as? EKCalendar }
         val defaultCalId = eventStore.defaultCalendarForNewEvents?.calendarIdentifier
         return ekList.sortedWith(
@@ -192,10 +192,10 @@ actual object CalendarBridge {
         val firstRule = rules?.firstOrNull() as? EKRecurrenceRule ?: return null
         val interval = firstRule.interval.toInt()
         return when (firstRule.frequency) {
-            EKRecurrenceFrequencyDaily -> "FREQ=DAILY"
-            EKRecurrenceFrequencyWeekly -> if (interval == 2) "FREQ=WEEKLY;INTERVAL=2" else "FREQ=WEEKLY"
-            EKRecurrenceFrequencyMonthly -> "FREQ=MONTHLY"
-            EKRecurrenceFrequencyYearly -> "FREQ=YEARLY"
+            EKRecurrenceFrequency.EKRecurrenceFrequencyDaily -> "FREQ=DAILY"
+            EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly -> if (interval == 2) "FREQ=WEEKLY;INTERVAL=2" else "FREQ=WEEKLY"
+            EKRecurrenceFrequency.EKRecurrenceFrequencyMonthly -> "FREQ=MONTHLY"
+            EKRecurrenceFrequency.EKRecurrenceFrequencyYearly -> "FREQ=YEARLY"
             else -> null
         }
     }
@@ -204,15 +204,15 @@ actual object CalendarBridge {
         if (rrule.isNullOrBlank()) return null
         return when {
             rrule.startsWith("FREQ=DAILY") ->
-                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequencyDaily, interval = 1L, end = null)
+                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyDaily, interval = 1L, end = null)
             rrule.startsWith("FREQ=WEEKLY;INTERVAL=2") ->
-                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequencyWeekly, interval = 2L, end = null)
+                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly, interval = 2L, end = null)
             rrule.startsWith("FREQ=WEEKLY") ->
-                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequencyWeekly, interval = 1L, end = null)
+                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly, interval = 1L, end = null)
             rrule.startsWith("FREQ=MONTHLY") ->
-                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequencyMonthly, interval = 1L, end = null)
+                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyMonthly, interval = 1L, end = null)
             rrule.startsWith("FREQ=YEARLY") ->
-                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequencyYearly, interval = 1L, end = null)
+                EKRecurrenceRule(recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyYearly, interval = 1L, end = null)
             else -> null
         }
     }
@@ -414,9 +414,9 @@ actual object CalendarBridge {
             }
 
             val span = if (existingEvent != null && !existingEvent.rrule.isNullOrEmpty() && !editThisAndFuture) {
-                EKSpanThisEvent
+                EKSpan.EKSpanThisEvent
             } else {
-                EKSpanFutureEvents
+                EKSpan.EKSpanFutureEvents
             }
 
             val saved = eventStore.saveEvent(targetEvent, span = span, commit = true, error = null)
@@ -507,9 +507,9 @@ actual object CalendarBridge {
         if (ekCalendars.isNotEmpty()) {
             val target = findEkEventInstance(event) ?: return false
             val span = if (!event.rrule.isNullOrEmpty() && !thisAndFuture) {
-                EKSpanThisEvent
+                EKSpan.EKSpanThisEvent
             } else {
-                EKSpanFutureEvents
+                EKSpan.EKSpanFutureEvents
             }
             return eventStore.removeEvent(target, span = span, commit = true, error = null)
         }
