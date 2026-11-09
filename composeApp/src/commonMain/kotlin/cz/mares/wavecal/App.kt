@@ -14,6 +14,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
@@ -24,13 +26,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -40,10 +47,12 @@ import kotlin.math.abs
 fun App() {
     val isDark = isSystemInDarkTheme()
     val colorScheme = if (isDark) darkColorScheme() else lightColorScheme()
+
     val langCode = remember { CalendarBridge.getSystemLanguageCode() }
     val strings = remember { Localization.getStrings(langCode) }
 
     val today = remember { CalendarBridge.getTodayParts() }
+
     var cursorYear by remember { mutableStateOf(today.year) }
     var cursorMonth by remember { mutableStateOf(today.monthZeroBased) }
 
@@ -142,6 +151,7 @@ fun App() {
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onBackground
                         )
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center,
@@ -251,7 +261,7 @@ fun App() {
                             }
                         }
 
-                        // Vždy přesně 6 řádků týdnů pro stabilní výšku mřížky
+                        // Vždy přesně 6 řádků pro stabilní výšku mřížky
                         val rows = cells.chunked(7)
                         for (rowIndex in 0 until 6) {
                             val week = rows.getOrNull(rowIndex)
@@ -367,7 +377,7 @@ fun App() {
                         }
                     }
 
-                    // Spodní ovládací lišta pevně ukotvená úplně dole (vždy 1 řádek)
+                    // Spodní ovládací lišta pevně ukotvená dole (vždy 1 řádek)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -792,13 +802,14 @@ private fun WheelPicker(
     if (items.isEmpty()) return
     val count = items.size
     val safeSelected = selectedIndex.coerceIn(0, count - 1)
+
     val virtualCount = if (wrapSelectorWheel && count > 1) count * 1000 else count
     val middleBase = if (wrapSelectorWheel && count > 1) {
         val half = virtualCount / 2
         half - (half % count)
     } else 0
-
     val initialListIndex = middleBase + safeSelected
+
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialListIndex)
     val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
     val scope = rememberCoroutineScope()
@@ -945,7 +956,9 @@ private fun MonthYearPickerDialog(
                             }
                         }
                     )
+
                     Spacer(modifier = Modifier.width(16.dp))
+
                     WheelPicker(
                         items = years,
                         selectedIndex = (selYear - 1900).coerceIn(0, years.lastIndex),
@@ -1232,6 +1245,14 @@ private fun AddEditEventDialog(
     onEmptyTitleError: () -> Unit,
     onSaved: () -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun schovejKlavesnici() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
     val repeatOptions = listOf(
         null to strings.repeatNone,
         "FREQ=DAILY" to strings.repeatDaily,
@@ -1273,163 +1294,209 @@ private fun AddEditEventDialog(
     var showDateSelectModal by remember { mutableStateOf(false) }
     var showTimeSelectModal by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = if (isDark) Color(0xFF252525) else MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp
+    Dialog(
+        onDismissRequest = {
+            schovejKlavesnici()
+            onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = if (isDark) Color(0xFF2C2C2C) else Color.White,
+                tonalElevation = 8.dp
             ) {
-                if (settings.expertMode) {
-                    Text(
-                        text = strings.labelCalendar,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    DropdownSelector(
-                        items = calendars,
-                        selectedItem = selectedCalendar,
-                        itemLabel = { it.name },
-                        onItemSelected = { selectedCalendar = it }
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-
-                Text(
-                    text = strings.labelEventName,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    placeholder = { Text(strings.hintEventName) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = strings.labelDate,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                Button(
-                    onClick = { showDateSelectModal = true },
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
+                        .padding(24.dp)
                 ) {
-                    Text(
-                        text = CalendarBridge.formatMediumDate(vybranyRok, vybranyMesic, vybranyDen),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = strings.labelTime,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                Button(
-                    onClick = { showTimeSelectModal = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                ) {
-                    val hh = vybranaHodina.toString().padStart(2, '0')
-                    val mm = vybranaMinuta.toString().padStart(2, '0')
-                    Text(
-                        text = "$hh:$mm",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                if (settings.expertMode) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = strings.labelRepeat,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    DropdownSelector(
-                        items = repeatOptions,
-                        selectedItem = repeatOptions.find { it.first == selectedRrule } ?: repeatOptions.first(),
-                        itemLabel = { it.second },
-                        onItemSelected = { selectedRrule = it.first }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Button(
-                        onClick = onDismiss,
+                    Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
                     ) {
-                        Text(strings.btnCancel)
-                    }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Button(
-                        onClick = {
-                            val cleanTitle = title.trim()
-                            if (cleanTitle.isEmpty()) {
-                                onEmptyTitleError()
-                                return@Button
-                            }
-                            val targetCal = selectedCalendar ?: return@Button
-                            val ok = CalendarBridge.saveOrUpdateEvent(
-                                existingEvent = udalostKUprave,
-                                editThisAndFuture = upravitTutoABudouci,
-                                calendar = targetCal,
-                                title = cleanTitle,
-                                year = vybranyRok,
-                                monthZeroBased = vybranyMesic,
-                                day = vybranyDen,
-                                hour = vybranaHodina,
-                                minute = vybranaMinuta,
-                                durationMinutes = settings.defaultDurationMinutes,
-                                alertMinutes = settings.defaultAlertMinutes,
-                                rrule = selectedRrule,
-                                isExpertMode = settings.expertMode
+                        if (settings.expertMode) {
+                            Text(
+                                text = strings.labelCalendar,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                modifier = Modifier.padding(bottom = 8.dp)
                             )
-                            if (ok) onSaved()
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF4CAF50),
-                            contentColor = Color.White
+                            DropdownSelector(
+                                items = calendars,
+                                selectedItem = selectedCalendar,
+                                itemLabel = { it.name },
+                                onOpenDropdown = { schovejKlavesnici() },
+                                onItemSelected = { selectedCalendar = it }
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+
+                        Text(
+                            text = strings.labelEventName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 8.dp)
                         )
-                    ) {
-                        Text(strings.btnSave, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            placeholder = { Text(strings.hintEventName) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = { schovejKlavesnici() }
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = strings.labelDate,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Button(
+                            onClick = {
+                                schovejKlavesnici()
+                                showDateSelectModal = true
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 50.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        ) {
+                            Text(
+                                text = CalendarBridge.formatMediumDate(vybranyRok, vybranyMesic, vybranyDen),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = strings.labelTime,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Button(
+                            onClick = {
+                                schovejKlavesnici()
+                                showTimeSelectModal = true
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 50.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        ) {
+                            val hh = vybranaHodina.toString().padStart(2, '0')
+                            val mm = vybranaMinuta.toString().padStart(2, '0')
+                            Text(
+                                text = "$hh:$mm",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (settings.expertMode) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = strings.labelRepeat,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            DropdownSelector(
+                                items = repeatOptions,
+                                selectedItem = repeatOptions.find { it.first == selectedRrule } ?: repeatOptions.first(),
+                                itemLabel = { it.second },
+                                onOpenDropdown = { schovejKlavesnici() },
+                                onItemSelected = { selectedRrule = it.first }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                schovejKlavesnici()
+                                onDismiss()
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        ) {
+                            Text(strings.btnCancel, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Button(
+                            onClick = {
+                                schovejKlavesnici()
+                                val cleanTitle = title.trim()
+                                if (cleanTitle.isEmpty()) {
+                                    onEmptyTitleError()
+                                    return@Button
+                                }
+                                val targetCal = selectedCalendar ?: return@Button
+                                val ok = CalendarBridge.saveOrUpdateEvent(
+                                    existingEvent = udalostKUprave,
+                                    editThisAndFuture = upravitTutoABudouci,
+                                    calendar = targetCal,
+                                    title = cleanTitle,
+                                    year = vybranyRok,
+                                    monthZeroBased = vybranyMesic,
+                                    day = vybranyDen,
+                                    hour = vybranaHodina,
+                                    minute = vybranaMinuta,
+                                    durationMinutes = settings.defaultDurationMinutes,
+                                    alertMinutes = settings.defaultAlertMinutes,
+                                    rrule = selectedRrule,
+                                    isExpertMode = settings.expertMode
+                                )
+                                if (ok) onSaved()
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF4CAF50),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text(strings.btnSave, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -1553,6 +1620,7 @@ private fun SimpleDateSelectorDialog(
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
+
                 Row(modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text(cancelText) }
                     Spacer(modifier = Modifier.width(12.dp))
@@ -1612,12 +1680,14 @@ private fun StepTimePickerDialog(
                             hour = newIdx
                         }
                     )
+
                     Text(
                         text = ":",
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
+
                     WheelPicker(
                         items = minutes,
                         selectedIndex = minuteStepIndex,
@@ -1630,6 +1700,7 @@ private fun StepTimePickerDialog(
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
+
                 Row(modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text(cancelText) }
                     Spacer(modifier = Modifier.width(12.dp))
@@ -1650,18 +1721,23 @@ private fun <T> DropdownSelector(
     items: List<T>,
     selectedItem: T?,
     itemLabel: (T) -> String,
+    onOpenDropdown: (() -> Unit)? = null,
     onItemSelected: (T) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
-                .clickable { if (items.isNotEmpty()) expanded = true }
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .heightIn(min = 50.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
+                .clickable {
+                    onOpenDropdown?.invoke()
+                    if (items.isNotEmpty()) expanded = true
+                }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1673,6 +1749,7 @@ private fun <T> DropdownSelector(
             )
             Text("▼", fontSize = 12.sp)
         }
+
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false }
