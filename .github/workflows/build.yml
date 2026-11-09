@@ -11,7 +11,7 @@ on:
 env:
   APP_NAME: "WaveCal"
   BUNDLE_ID: "cz.mares.wavecal"
-  APP_VERSION: "1.0"
+  APP_VERSION: "1.1"
   PUBLISH_TO_STORES: "true"
   BUILD_IOS: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -664,7 +664,7 @@ jobs:
                   d = r.json()
                   raw = base64.b64decode(d["content"]).decode("utf-8")
                   import re
-                  updated = re.sub(r'(APP_VERSION:\s*"[^"]*")', f'APP_VERSION: "{new_ver}"', raw)
+                  updated = re.sub(r'(APP_VERSION:\s*"[^"]*")', f'APP_VERSION: "1.1"', raw)
                   if updated != raw:
                       put_r = requests.put(url, headers=hdrs, json={
                           "message": f"Automaticka aktualizace hlavni verze na {new_ver} [skip ci]",
