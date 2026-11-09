@@ -165,7 +165,7 @@ jobs:
               result = edit_request.execute(num_retries=5)
               edit_id = result["id"]
 
-              media = MediaFileUpload(aab_path, mimetype="application/octet-stream", chunksize=5*1024*1024, resumable=True)
+              media = MediaFileUpload(aab_path, mimetype="application/octet-stream", resumable=True)
               bundle_response = service.edits().bundles().upload(
                   editId=edit_id,
                   packageName=package_name,
