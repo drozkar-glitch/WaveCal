@@ -1,14 +1,17 @@
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.GradientPaint
 import java.awt.RenderingHints
+import java.awt.geom.GeneralPath
+import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.util.zip.CRC32
 import java.util.zip.DeflaterOutputStream
-import javax.imageio.ImageIO
 
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
@@ -118,112 +121,223 @@ android {
 
 val generateIosAppIcon by tasks.registering {
     doLast {
-        val iconDir = rootProject.file("iosApp/iosApp/Assets.xcassets/AppIcon.appiconset")
+        val assetsDir = rootProject.file("iosApp/iosApp/Assets.xcassets")
+        val iconDir = File(assetsDir, "AppIcon.appiconset")
         iconDir.mkdirs()
-        val outFile = File(iconDir, "app-icon-1024.png")
 
-        val width = 1024
-        val height = 1024
-        val canvas = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
-        val g2d = canvas.createGraphics()
-        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
-        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+        File(assetsDir, "Contents.json").writeText(
+            """
+            {
+              "info" : {
+                "author" : "xcode",
+                "version" : 1
+              }
+            }
+            """.trimIndent()
+        )
 
-        // Vychozi pozadi z Android ikony (#DCD93D)
-        g2d.color = Color(0xDC, 0xD9, 0x3D)
-        g2d.fillRect(0, 0, width, height)
+        val baseSize = 1024
+        val master = BufferedImage(baseSize, baseSize, BufferedImage.TYPE_INT_RGB)
+        val g = master.createGraphics()
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
 
-        val playstorePng = rootProject.file("app/src/main/ic_launcher-playstore.png")
-        var drawnFromSource = false
-        if (playstorePng.exists()) {
-            try {
-                val srcImg = ImageIO.read(playstorePng)
-                if (srcImg != null) {
-                    // Vykresleni s mirnym presazenim, aby iOS maska orezala pripadne pruhledne okraje z Play Store PNG
-                    val margin = -36
-                    g2d.drawImage(srcImg, margin, margin, width - 2 * margin, height - 2 * margin, null)
-                    drawnFromSource = true
+        // Tyrkysovy prechod pozadi podle ikony v Google Play (#26A69A -> #00695C)
+        g.paint = GradientPaint(
+            0f, 0f, Color(0x26, 0xA6, 0x9A),
+            0f, baseSize.toFloat(), Color(0x00, 0x69, 0x5C)
+        )
+        g.fillRect(0, 0, baseSize, baseSize)
+
+        // Jemny vnitrni lesk v horni casti
+        g.paint = GradientPaint(
+            0f, 0f, Color(255, 255, 255, 38),
+            0f, 450f, Color(255, 255, 255, 0)
+        )
+        g.fillRect(0, 0, baseSize, 450)
+
+        g.color = Color.WHITE
+
+        // 1. Obrys kalendare
+        g.stroke = BasicStroke(36f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        g.draw(RoundRectangle2D.Double(210.0, 210.0, 604.0, 560.0, 96.0, 96.0))
+
+        // 2. Vodorovna linka hlavicky kalendare
+        g.stroke = BasicStroke(30f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        g.drawLine(218, 338, 806, 338)
+
+        // 3. Krouzky vazby kalendare nahore
+        val ringBg = Color(0x1B, 0x93, 0x86)
+        for (rx in intArrayOf(370, 654)) {
+            g.color = ringBg
+            g.fill(RoundRectangle2D.Double((rx - 38).toDouble(), 142.0, 76.0, 136.0, 38.0, 38.0))
+            g.color = Color.WHITE
+            g.fill(RoundRectangle2D.Double((rx - 20).toDouble(), 154.0, 40.0, 112.0, 20.0, 20.0))
+        }
+
+        // 4. Mrizka dnu kalendare v horni casti
+        val cols = intArrayOf(302, 422, 542, 662)
+        val rows = intArrayOf(392, 488)
+        for (rIdx in rows.indices) {
+            for (cIdx in cols.indices) {
+                if (rIdx == 1 && cIdx >= 2) continue
+                val cx = cols[cIdx].toDouble()
+                val cy = rows[rIdx].toDouble()
+                g.fill(RoundRectangle2D.Double(cx, cy, 62.0, 54.0, 14.0, 14.0))
+            }
+        }
+
+        // 5. Morska vlna ve spodni casti kalendare (styl WaveCal z Google Play)
+        g.color = Color(0x00, 0x76, 0x68)
+        g.fill(RoundRectangle2D.Double(186.0, 540.0, 652.0, 255.0, 60.0, 60.0))
+
+        // Znovu dokresleni spodniho a bocniho ramu kalendare nad podkladem
+        g.color = Color.WHITE
+        g.stroke = BasicStroke(36f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val frameTopClip = g.clip
+        g.clipRect(180, 190, 670, 410)
+        g.draw(RoundRectangle2D.Double(210.0, 210.0, 604.0, 560.0, 96.0, 96.0))
+        g.clip = frameTopClip
+
+        // Horni hreben vlny se zavinutim vpravo
+        g.stroke = BasicStroke(38f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val wave1 = GeneralPath().apply {
+            moveTo(156f, 648f)
+            curveTo(255f, 580f, 360f, 585f, 458f, 642f)
+            curveTo(555f, 698f, 680f, 670f, 742f, 575f)
+            curveTo(775f, 522f, 735f, 470f, 682f, 492f)
+            curveTo(645f, 508f, 648f, 556f, 686f, 568f)
+        }
+        g.draw(wave1)
+
+        // Spodni soubezna vlna
+        g.stroke = BasicStroke(32f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val wave2 = GeneralPath().apply {
+            moveTo(176f, 734f)
+            curveTo(275f, 675f, 382f, 680f, 480f, 732f)
+            curveTo(585f, 786f, 715f, 760f, 828f, 668f)
+        }
+        g.draw(wave2)
+
+        g.dispose()
+
+        fun writeRgbPng(img: BufferedImage, targetFile: File) {
+            val w = img.width
+            val h = img.height
+            val rawBytes = ByteArrayOutputStream(h * (1 + w * 3))
+            for (y in 0 until h) {
+                rawBytes.write(0)
+                for (x in 0 until w) {
+                    val rgb = img.getRGB(x, y)
+                    rawBytes.write((rgb shr 16) and 0xFF)
+                    rawBytes.write((rgb shr 8) and 0xFF)
+                    rawBytes.write(rgb and 0xFF)
                 }
-            } catch (_: Exception) {
             }
-        }
 
-        if (!drawnFromSource) {
-            // Presna vektorova podoba Android ikony (ic_launcher_background #DCD93D + ic_launcher_foreground.xml)
-            g2d.color = Color(0x00, 0x00, 0x00)
-            // Prepocet 24x24 viewportu se scale 0.58 a translate 5.04 do 1024x1024
-            fun mapCoord(v: Double): Int {
-                val transformed = 5.04 + v * 0.58
-                // Viditelny vyrez adaptive ikony (72dp ze 108dp = 4.0..20.0 v 24x24 soustavne)
-                val norm = (transformed - 4.0) / 16.0
-                return (norm * 1024.0).toInt()
+            fun writeChunk(out: DataOutputStream, type: String, data: ByteArray) {
+                out.writeInt(data.size)
+                val typeBytes = type.toByteArray(Charsets.US_ASCII)
+                out.write(typeBytes)
+                out.write(data)
+                val crc = CRC32()
+                crc.update(typeBytes)
+                crc.update(data)
+                out.writeInt(crc.value.toInt())
             }
-            val x1 = mapCoord(3.0)
-            val x2 = mapCoord(21.0)
-            val barW = x2 - x1
 
-            // Horni pruh: M3,6h18v2L3,8z
-            val yTop1 = mapCoord(6.0)
-            val yTop2 = mapCoord(8.0)
-            g2d.fillRoundRect(x1, yTop1, barW, yTop2 - yTop1, 20, 20)
+            val pngOut = ByteArrayOutputStream()
+            val dataOut = DataOutputStream(pngOut)
+            dataOut.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
 
-            // Stredni hlavni pruh: M3,10h18v5L3,15z
-            val yMid1 = mapCoord(10.0)
-            val yMid2 = mapCoord(15.0)
-            g2d.fillRoundRect(x1, yMid1, barW, yMid2 - yMid1, 24, 24)
+            val ihdr = ByteArrayOutputStream()
+            val ihdrData = DataOutputStream(ihdr)
+            ihdrData.writeInt(w)
+            ihdrData.writeInt(h)
+            ihdrData.writeByte(8)
+            ihdrData.writeByte(2) // 24-bit RGB bez alfa kanalu
+            ihdrData.writeByte(0)
+            ihdrData.writeByte(0)
+            ihdrData.writeByte(0)
+            writeChunk(dataOut, "IHDR", ihdr.toByteArray())
 
-            // Spodni pruh: M3,17h18v2L3,19z
-            val yBot1 = mapCoord(17.0)
-            val yBot2 = mapCoord(19.0)
-            g2d.fillRoundRect(x1, yBot1, barW, yBot2 - yBot1, 20, 20)
-        }
-        g2d.dispose()
+            val idatBos = ByteArrayOutputStream()
+            DeflaterOutputStream(idatBos).use { it.write(rawBytes.toByteArray()) }
+            writeChunk(dataOut, "IDAT", idatBos.toByteArray())
+            writeChunk(dataOut, "IEND", ByteArray(0))
 
-        // Ulozeni jako cisty 24-bit RGB PNG (colorType = 2, bez alfa kanalu pro Apple App Store Connect)
-        val rawBytes = ByteArrayOutputStream(height * (1 + width * 3))
-        for (y in 0 until height) {
-            rawBytes.write(0)
-            for (x in 0 until width) {
-                val rgb = canvas.getRGB(x, y)
-                rawBytes.write((rgb shr 16) and 0xFF)
-                rawBytes.write((rgb shr 8) and 0xFF)
-                rawBytes.write(rgb and 0xFF)
-            }
+            targetFile.writeBytes(pngOut.toByteArray())
         }
 
-        fun writeChunk(out: DataOutputStream, type: String, data: ByteArray) {
-            out.writeInt(data.size)
-            val typeBytes = type.toByteArray(Charsets.US_ASCII)
-            out.write(typeBytes)
-            out.write(data)
-            val crc = CRC32()
-            crc.update(typeBytes)
-            crc.update(data)
-            out.writeInt(crc.value.toInt())
+        fun resizeImage(src: BufferedImage, targetPx: Int): BufferedImage {
+            if (targetPx == src.width && targetPx == src.height) return src
+            val dst = BufferedImage(targetPx, targetPx, BufferedImage.TYPE_INT_RGB)
+            val g2 = dst.createGraphics()
+            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.drawImage(src, 0, 0, targetPx, targetPx, null)
+            g2.dispose()
+            return dst
         }
 
-        val pngOut = ByteArrayOutputStream()
-        val dataOut = DataOutputStream(pngOut)
-        dataOut.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+        data class IconSpec(val idiom: String, val sizeStr: String, val scale: String, val px: Int)
 
-        val ihdr = ByteArrayOutputStream()
-        val ihdrData = DataOutputStream(ihdr)
-        ihdrData.writeInt(width)
-        ihdrData.writeInt(height)
-        ihdrData.writeByte(8)
-        ihdrData.writeByte(2) // RGB bez alfa kanalu
-        ihdrData.writeByte(0)
-        ihdrData.writeByte(0)
-        ihdrData.writeByte(0)
-        writeChunk(dataOut, "IHDR", ihdr.toByteArray())
+        val specs = listOf(
+            IconSpec("iphone", "20x20", "2x", 40),
+            IconSpec("iphone", "20x20", "3x", 60),
+            IconSpec("iphone", "29x29", "2x", 58),
+            IconSpec("iphone", "29x29", "3x", 87),
+            IconSpec("iphone", "40x40", "2x", 80),
+            IconSpec("iphone", "40x40", "3x", 120),
+            IconSpec("iphone", "60x60", "2x", 120),
+            IconSpec("iphone", "60x60", "3x", 180),
+            IconSpec("ipad", "20x20", "1x", 20),
+            IconSpec("ipad", "20x20", "2x", 40),
+            IconSpec("ipad", "29x29", "1x", 29),
+            IconSpec("ipad", "29x29", "2x", 58),
+            IconSpec("ipad", "40x40", "1x", 40),
+            IconSpec("ipad", "40x40", "2x", 80),
+            IconSpec("ipad", "76x76", "1x", 76),
+            IconSpec("ipad", "76x76", "2x", 152),
+            IconSpec("ipad", "83.5x83.5", "2x", 167),
+            IconSpec("ios-marketing", "1024x1024", "1x", 1024)
+        )
 
-        val idatBos = ByteArrayOutputStream()
-        DeflaterOutputStream(idatBos).use { it.write(rawBytes.toByteArray()) }
-        writeChunk(dataOut, "IDAT", idatBos.toByteArray())
-        writeChunk(dataOut, "IEND", ByteArray(0))
+        val jsonEntries = mutableListOf<String>()
+        for (spec in specs) {
+            val fileName = "icon_${spec.idiom}_${spec.sizeStr}_${spec.scale}.png"
+            val scaled = resizeImage(master, spec.px)
+            writeRgbPng(scaled, File(iconDir, fileName))
+            jsonEntries.add(
+                """
+                {
+                  "filename" : "$fileName",
+                  "idiom" : "${spec.idiom}",
+                  "scale" : "${spec.scale}",
+                  "size" : "${spec.sizeStr}"
+                }
+                """.trimIndent()
+            )
+        }
 
-        outFile.writeBytes(pngOut.toByteArray())
+        // Záložní 1024x1024 ikona i pod názvem app-icon-1024.png
+        writeRgbPng(master, File(iconDir, "app-icon-1024.png"))
+
+        val contentsJson = """
+        {
+          "images" : [
+        ${jsonEntries.joinToString(",\n").prependIndent("    ")}
+          ],
+          "info" : {
+            "author" : "xcode",
+            "version" : 1
+          }
+        }
+        """.trimIndent()
+
+        File(iconDir, "Contents.json").writeText(contentsJson)
     }
 }
 

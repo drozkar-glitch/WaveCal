@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,8 +15,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
@@ -29,15 +28,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -444,6 +440,29 @@ fun App() {
                     }
                 }
 
+                // 8. Překryvné okno Přidat / Upravit událost (přímo v hlavním okně, takže vždy sedí nad klávesnicí)
+                if (showAddEditDialog) {
+                    AddEditEventDialog(
+                        year = dialogInitYear,
+                        monthZeroBased = dialogInitMonth,
+                        day = dialogInitDay,
+                        udalostKUprave = eventToEdit,
+                        upravitTutoABudouci = editThisAndFuture,
+                        settings = settings,
+                        calendars = CalendarBridge.getAvailableCalendars(),
+                        strings = strings,
+                        isDark = isDark,
+                        onDismiss = { showAddEditDialog = false },
+                        onEmptyTitleError = { showToast(strings.toastEnterName) },
+                        onSaved = {
+                            showAddEditDialog = false
+                            settings = CalendarBridge.loadSettings()
+                            refreshTrigger++
+                            showToast(strings.toastSaved)
+                        }
+                    )
+                }
+
                 // Plovoucí zpráva (Toast náhrada)
                 if (snackMessage != null) {
                     Surface(
@@ -714,29 +733,6 @@ fun App() {
                         TextButton(onClick = { showAboutDialog = false }) {
                             Text(strings.btnOk)
                         }
-                    }
-                )
-            }
-
-            // 8. Dialog Přidat / Upravit událost
-            if (showAddEditDialog) {
-                AddEditEventDialog(
-                    year = dialogInitYear,
-                    monthZeroBased = dialogInitMonth,
-                    day = dialogInitDay,
-                    udalostKUprave = eventToEdit,
-                    upravitTutoABudouci = editThisAndFuture,
-                    settings = settings,
-                    calendars = CalendarBridge.getAvailableCalendars(),
-                    strings = strings,
-                    isDark = isDark,
-                    onDismiss = { showAddEditDialog = false },
-                    onEmptyTitleError = { showToast(strings.toastEnterName) },
-                    onSaved = {
-                        showAddEditDialog = false
-                        settings = CalendarBridge.loadSettings()
-                        refreshTrigger++
-                        showToast(strings.toastSaved)
                     }
                 )
             }
@@ -1294,209 +1290,206 @@ private fun AddEditEventDialog(
     var showDateSelectModal by remember { mutableStateOf(false) }
     var showTimeSelectModal by remember { mutableStateOf(false) }
 
-    Dialog(
-        onDismissRequest = {
-            schovejKlavesnici()
-            onDismiss()
-        },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .imePadding()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                schovejKlavesnici()
+            }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
+        Surface(
             modifier = Modifier
-                .fillMaxSize()
-                .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {},
+            shape = RoundedCornerShape(28.dp),
+            color = if (isDark) Color(0xFF2C2C2C) else Color.White,
+            tonalElevation = 8.dp
         ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(28.dp),
-                color = if (isDark) Color(0xFF2C2C2C) else Color.White,
-                tonalElevation = 8.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(24.dp)
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        if (settings.expertMode) {
-                            Text(
-                                text = strings.labelCalendar,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-                            DropdownSelector(
-                                items = calendars,
-                                selectedItem = selectedCalendar,
-                                itemLabel = { it.name },
-                                onOpenDropdown = { schovejKlavesnici() },
-                                onItemSelected = { selectedCalendar = it }
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                        }
-
+                    if (settings.expertMode) {
                         Text(
-                            text = strings.labelEventName,
+                            text = strings.labelCalendar,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            fontSize = 15.sp,
+                            modifier = Modifier.padding(bottom = 6.dp)
                         )
-                        OutlinedTextField(
-                            value = title,
-                            onValueChange = { title = it },
-                            placeholder = { Text(strings.hintEventName) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Sentences,
-                                imeAction = ImeAction.Done
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onDone = { schovejKlavesnici() }
-                            ),
-                            modifier = Modifier.fillMaxWidth()
+                        DropdownSelector(
+                            items = calendars,
+                            selectedItem = selectedCalendar,
+                            itemLabel = { it.name },
+                            onOpenDropdown = { schovejKlavesnici() },
+                            onItemSelected = { selectedCalendar = it }
                         )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = strings.labelDate,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        Button(
-                            onClick = {
-                                schovejKlavesnici()
-                                showDateSelectModal = true
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 50.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        ) {
-                            Text(
-                                text = CalendarBridge.formatMediumDate(vybranyRok, vybranyMesic, vybranyDen),
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = strings.labelTime,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        Button(
-                            onClick = {
-                                schovejKlavesnici()
-                                showTimeSelectModal = true
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 50.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        ) {
-                            val hh = vybranaHodina.toString().padStart(2, '0')
-                            val mm = vybranaMinuta.toString().padStart(2, '0')
-                            Text(
-                                text = "$hh:$mm",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        if (settings.expertMode) {
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = strings.labelRepeat,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-                            DropdownSelector(
-                                items = repeatOptions,
-                                selectedItem = repeatOptions.find { it.first == selectedRrule } ?: repeatOptions.first(),
-                                itemLabel = { it.second },
-                                onOpenDropdown = { schovejKlavesnici() },
-                                onItemSelected = { selectedRrule = it.first }
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(10.dp))
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = strings.labelEventName,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    EventTitleInput(
+                        value = title,
+                        onValueChange = { title = it },
+                        placeholder = strings.hintEventName,
+                        isDark = isDark,
+                        onDone = { schovejKlavesnici() },
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                schovejKlavesnici()
-                                onDismiss()
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(56.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = strings.labelDate,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Button(
+                        onClick = {
+                            schovejKlavesnici()
+                            showDateSelectModal = true
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Text(
+                            text = CalendarBridge.formatMediumDate(vybranyRok, vybranyMesic, vybranyDen),
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = strings.labelTime,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Button(
+                        onClick = {
+                            schovejKlavesnici()
+                            showTimeSelectModal = true
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        val hh = vybranaHodina.toString().padStart(2, '0')
+                        val mm = vybranaMinuta.toString().padStart(2, '0')
+                        Text(
+                            text = "$hh:$mm",
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (settings.expertMode) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = strings.labelRepeat,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        DropdownSelector(
+                            items = repeatOptions,
+                            selectedItem = repeatOptions.find { it.first == selectedRrule } ?: repeatOptions.first(),
+                            itemLabel = { it.second },
+                            onOpenDropdown = { schovejKlavesnici() },
+                            onItemSelected = { selectedRrule = it.first }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            schovejKlavesnici()
+                            onDismiss()
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Text(strings.btnCancel, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Button(
+                        onClick = {
+                            schovejKlavesnici()
+                            val cleanTitle = title.trim()
+                            if (cleanTitle.isEmpty()) {
+                                onEmptyTitleError()
+                                return@Button
+                            }
+                            val targetCal = selectedCalendar ?: return@Button
+                            val ok = CalendarBridge.saveOrUpdateEvent(
+                                existingEvent = udalostKUprave,
+                                editThisAndFuture = upravitTutoABudouci,
+                                calendar = targetCal,
+                                title = cleanTitle,
+                                year = vybranyRok,
+                                monthZeroBased = vybranyMesic,
+                                day = vybranyDen,
+                                hour = vybranaHodina,
+                                minute = vybranaMinuta,
+                                durationMinutes = settings.defaultDurationMinutes,
+                                alertMinutes = settings.defaultAlertMinutes,
+                                rrule = selectedRrule,
+                                isExpertMode = settings.expertMode
                             )
-                        ) {
-                            Text(strings.btnCancel, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Button(
-                            onClick = {
-                                schovejKlavesnici()
-                                val cleanTitle = title.trim()
-                                if (cleanTitle.isEmpty()) {
-                                    onEmptyTitleError()
-                                    return@Button
-                                }
-                                val targetCal = selectedCalendar ?: return@Button
-                                val ok = CalendarBridge.saveOrUpdateEvent(
-                                    existingEvent = udalostKUprave,
-                                    editThisAndFuture = upravitTutoABudouci,
-                                    calendar = targetCal,
-                                    title = cleanTitle,
-                                    year = vybranyRok,
-                                    monthZeroBased = vybranyMesic,
-                                    day = vybranyDen,
-                                    hour = vybranaHodina,
-                                    minute = vybranaMinuta,
-                                    durationMinutes = settings.defaultDurationMinutes,
-                                    alertMinutes = settings.defaultAlertMinutes,
-                                    rrule = selectedRrule,
-                                    isExpertMode = settings.expertMode
-                                )
-                                if (ok) onSaved()
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(56.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF4CAF50),
-                                contentColor = Color.White
-                            )
-                        ) {
-                            Text(strings.btnSave, fontWeight = FontWeight.Bold)
-                        }
+                            if (ok) onSaved()
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF4CAF50),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text(strings.btnSave, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1730,14 +1723,14 @@ private fun <T> DropdownSelector(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 50.dp)
+                .heightIn(min = 46.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
                 .clickable {
                     onOpenDropdown?.invoke()
                     if (items.isNotEmpty()) expanded = true
                 }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
